@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: AGPL-3.0
+pragma solidity 0.8.28;
+
+import {IERC20} from "@yearnvaults/contracts/BaseStrategy.sol";
+
+interface ISteth is IERC20 {
+    event Submitted(address sender, uint256 amount, address referral);
+
+    function submit(address) external payable returns (uint256);
+}
+
+interface IQueue {
+    function claimWithdrawal(uint256 _requestId) external;
+
+    function requestWithdrawals(uint256[] calldata _amounts, address _owner)
+        external
+        returns (uint256[] memory requestIds);
+}
+
+interface IWETH is IERC20 {
+    function deposit() external payable;
+
+    function decimals() external view returns (uint256);
+
+    function withdraw(uint256) external;
+}
+
+interface ICurveFi {
+    function get_virtual_price() external view returns (uint256);
+
+    function add_liquidity(
+        // sBTC pool
+        uint256[3] calldata amounts,
+        uint256 min_mint_amount
+    ) external;
+
+    function add_liquidity(
+        // bUSD pool
+        uint256[4] calldata amounts,
+        uint256 min_mint_amount
+    ) external;
+
+    function add_liquidity(
+        // stETH pool
+        uint256[2] calldata amounts,
+        uint256 min_mint_amount
+    ) external payable;
+
+    function remove_liquidity_imbalance(
+        uint256[4] calldata amounts,
+        uint256 max_burn_amount
+    ) external;
+
+    function remove_liquidity(uint256 _amount, uint256[4] calldata amounts)
+        external;
+
+    function remove_liquidity_one_coin(
+        uint256 _token_amount,
+        int128 i,
+        uint256 min_amount
+    ) external;
+
+    function exchange(
+        int128 from,
+        int128 to,
+        uint256 _from_amount,
+        uint256 _min_to_amount
+    ) external payable;
+
+    function balances(int128) external view returns (uint256);
+
+    function get_dy(
+        int128 from,
+        int128 to,
+        uint256 _from_amount
+    ) external view returns (uint256);
+
+    function calc_token_amount(uint256[2] calldata amounts, bool is_deposit)
+        external
+        view
+        returns (uint256);
+}
