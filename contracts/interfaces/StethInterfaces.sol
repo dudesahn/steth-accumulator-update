@@ -15,6 +15,12 @@ interface IQueue {
     function requestWithdrawals(uint256[] calldata _amounts, address _owner)
         external
         returns (uint256[] memory requestIds);
+
+    function safeTransferFrom(
+        address _from,
+        address _to,
+        uint256 _requestId
+    ) external;
 }
 
 interface IWETH is IERC20 {
