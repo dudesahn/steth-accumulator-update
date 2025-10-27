@@ -9,6 +9,8 @@ import {ISteth, IQueue, IWETH, ICurveFi} from "./interfaces/StethInterfaces.sol"
 contract StrategystETHAccumulatorV3 is BaseStrategy {
     using SafeERC20 for IERC20;
 
+    event WithdrawalLoss(uint256 toWithdraw, uint256 received, uint256 loss);
+
     bool public checkLiqGauge = true;
     ICurveFi public constant StableSwapSTETH =
         ICurveFi(0xDC24316b9AE028F1497c275EB9192a3Ea0f67022);
@@ -24,7 +26,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
     uint256 public pendingRedemptions;
 
-    bool public reportLoss = true;
+    bool public reportLoss = false;
     bool public dontInvest = true;
 
     uint256 public peg = 95; // 100 = 1%
@@ -39,7 +41,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     constructor(address _vault) BaseStrategy(_vault) {
         // You can set these parameters on deployment to whatever you want
         maxReportDelay = 1 weeks;
-        healthCheck = 0xDDCea799fF1699e98EDF118e0629A974Df7DF012; //hardcode healthcheck
+        healthCheck = 0xDDCea799fF1699e98EDF118e0629A974Df7DF012; // hardcode healthcheck
 
         stETH.approve(address(StableSwapSTETH), type(uint256).max);
 
@@ -136,27 +138,31 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
             uint256 toWithdraw = _profit + _debtOutstanding;
 
             if (toWithdraw > wantBal) {
+                toWithdraw = Math.min(toWithdraw, stethBalance());
                 uint256 willWithdraw = Math.min(maxSingleTrade, toWithdraw);
                 uint256 withdrawn = _divest(willWithdraw); //we step our withdrawals. adjust max single trade to withdraw more
+                // assume that we get peg level of slippage on our withdrawal
                 if (withdrawn < willWithdraw) {
-                    _loss = willWithdraw - withdrawn;
+                    // _loss = willWithdraw - withdrawn; // comment this and the line below out to skip taking losses on harvest withdrawals
+                    emit WithdrawalLoss(willWithdraw, withdrawn, _loss); // ****ONLY FOR TESTING REMOVE BEFORE DEPLOY
+                }
+                // check in on our new amount of tokens after withdrawing
+                // loss on divesting is only a true loss if it's bigger than our peg value
+                wantBal = wantBalance();
+                totalAssets = estimatedTotalAssets();
+                // redo our check for profit now that we've swapped stETH for WETH
+                if (totalAssets > debt) {
+                    _profit = totalAssets - debt;
+                } else {
+                    _loss = debt - totalAssets;
                 }
             }
-            wantBal = wantBalance();
 
-            //net off profit and loss
-            if (_profit >= _loss) {
-                _profit = _profit - _loss;
-                _loss = 0;
-            } else {
-                _loss = _loss - _profit;
-                _profit = 0;
-            }
-
-            //profit + _debtOutstanding must be <= wantbalance. Prioritise profit first
+            // profit + _debtOutstanding must be <= wantbalance. Prioritise profit first
             if (wantBal < _profit) {
                 _profit = wantBal;
             } else if (wantBal < toWithdraw) {
+                // we will likely hit this if we reducing debt via swaps since we get some slippage
                 _debtPayment = wantBal - _profit;
             } else {
                 _debtPayment = _debtOutstanding;
@@ -222,11 +228,18 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     function _divest(uint256 _amount) internal returns (uint256) {
         uint256 before = wantBalance();
 
-        uint256 slippageAllowance = (_amount *
-            (DENOMINATOR - slippageProtectionOut)) / DENOMINATOR;
-        StableSwapSTETH.exchange(STETHID, WETHID, _amount, slippageAllowance);
+        if (_amount > 0) {
+            uint256 slippageAllowance = (_amount *
+                (DENOMINATOR - slippageProtectionOut)) / DENOMINATOR;
+            StableSwapSTETH.exchange(
+                STETHID,
+                WETHID,
+                _amount,
+                slippageAllowance
+            );
 
-        weth.deposit{value: address(this).balance}();
+            weth.deposit{value: address(this).balance}();
+        }
 
         return wantBalance() - before;
     }
@@ -248,8 +261,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
         _liquidatedAmount = _amountNeeded - _loss;
     }
-
-    // NOTE: Can override `tendTrigger` and `harvestTrigger` if necessary
 
     function prepareMigration(address _newStrategy) internal override {
         uint256 stethBal = stethBalance();

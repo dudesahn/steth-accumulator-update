@@ -42,6 +42,9 @@ def test_change_debt(
     print("\nAfter first harvest, before DR reduction")
     strategy_params = check_status(strategy, vault)
 
+    # for stETH accumulator in this test, turn off our limit on max to swap at once
+    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
+
     # evaluate our current total assets
     old_assets = vault.totalAssets()
     initial_strategy_assets = strategy.estimatedTotalAssets()
@@ -202,7 +205,6 @@ def test_change_debt(
     vault.updateStrategyDebtRatio(strategy, 0, {"from": gov})
 
     # harvest to send our funds back to the strategy
-    # this should fail in schlag's v2 => v3 router version (use_old = True, use_v3 = True)
     (profit, loss, extra) = harvest_strategy(
         use_v3,
         strategy,
@@ -262,6 +264,9 @@ def test_change_debt_with_profit(
     # check our current status
     print("\nAfter first harvest, before DR reduction")
     strategy_params = check_status(strategy, vault)
+
+    # for stETH accumulator in this test, turn off our limit on max to swap at once
+    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
 
     # evaluate our current total assets
     old_assets = vault.totalAssets()
