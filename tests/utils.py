@@ -44,6 +44,10 @@ def harvest_strategy(
     loss = tx.events["Harvested"]["loss"]
     print("Debt Payment:", tx.events["Harvested"]["debtPayment"])
     print("Debt Outstanding:", tx.events["Harvested"]["debtOutstanding"])
+    if loss > 0:
+        print("🚨 Harvest loss:", loss / 1e18)
+    if profit > 0:
+        print("💰 Harvest profit:", profit / 1e18)
 
     # assert there are no loose funds in strategy after a harvest
     print("Loose want after harvest:", strategy.wantBalance() / 1e18)

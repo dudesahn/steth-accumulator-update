@@ -48,7 +48,7 @@ def test_migration(
     chain.sleep(sleep_time)
 
     ######### THIS WILL NEED TO BE UPDATED BASED ON STRATEGY CONSTRUCTOR #########
-    new_strategy = gov.deploy(contract_name, vault, destination_vault, strategy_name)
+    new_strategy = gov.deploy(contract_name, vault)
 
     # can we harvest an unactivated strategy? should be no
     tx = new_strategy.harvestTrigger(0, {"from": gov})
@@ -69,6 +69,10 @@ def test_migration(
 
     ######### ADD LOGIC TO TEST CLAIMING OF ASSETS FOR TRANSFER TO NEW STRATEGY AS NEEDED #########
     # since migrating doesn't enter prepareReturn, we may have to manually claim rewards
+    before_weth = strategy.wantBalance()
+    before_steth = strategy.stethBalance()
+    assert new_strategy.wantBalance() == 0
+    assert new_strategy.stethBalance() == 0
     vault.migrateStrategy(strategy, new_strategy, {"from": gov})
 
     # gmx has a two-step migration, have to accept it on the new strategy too
@@ -76,8 +80,14 @@ def test_migration(
         new_strategy.acceptTransfer(strategy, {"from": gov})
 
     ####### ADD LOGIC TO MAKE SURE ASSET TRANSFER WENT AS EXPECTED #######
-    assert destination_vault.balanceOf(strategy) == 0
-    assert destination_vault.balanceOf(new_strategy) > 0
+    assert new_strategy.wantBalance() == before_weth
+    assert (
+        pytest.approx(new_strategy.stethBalance(), abs=2) == before_steth
+    )  # we lose a few wei on migration for some weird reason
+    assert strategy.wantBalance() == 0
+    assert (
+        pytest.approx(strategy.stethBalance(), abs=1) == 0
+    )  # we leave behind 1 wei, stETH is weird
 
     # assert that our old strategy is empty
     updated_total_old = strategy.estimatedTotalAssets()
@@ -197,7 +207,7 @@ def test_empty_migration(
     chain.sleep(sleep_time)
 
     ######### THIS WILL NEED TO BE UPDATED BASED ON STRATEGY CONSTRUCTOR #########
-    new_strategy = gov.deploy(contract_name, vault, destination_vault, strategy_name)
+    new_strategy = gov.deploy(contract_name, vault)
 
     # set our debtRatio to zero so our harvest sends all funds back to vault
     vault.updateStrategyDebtRatio(strategy, 0, {"from": gov})
