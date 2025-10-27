@@ -352,4 +352,13 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         // Convert received ETH to WETH
         IWETH(address(want)).deposit{value: address(this).balance}();
     }
+
+    /// @notice Rescue a stuck withdrawal NFT. Only may be called by governance.
+    function rescueNft(uint256 _requestId) external onlyGovernance {
+        IQueue(WITHDRAWAL_QUEUE).safeTransferFrom(
+            address(this),
+            governance(),
+            _requestId
+        );
+    }
 }
