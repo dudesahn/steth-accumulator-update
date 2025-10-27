@@ -116,6 +116,9 @@ def test_revoke_strategy_from_vault(
     # revoke and harvest
     vault.revokeStrategy(strategy.address, {"from": gov})
 
+    # when revoking, make sure to increase our max swap size so we can fully exit
+    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
+
     (profit, loss, extra) = harvest_strategy(
         use_v3,
         strategy,
@@ -215,7 +218,7 @@ def test_setters(
         return
 
     ######### BELOW WILL NEED TO BE UPDATED BASED SETTERS OUR STRATEGY HAS #########
-    strategy.setMaxLoss(1, {"from": gov})
+    strategy.updateMaxSingleTrade(1_000e18, {"from": gov})
 
     # harvest our credit
     (profit, loss, extra) = harvest_strategy(
@@ -228,23 +231,33 @@ def test_setters(
         target,
         destination_vault,
     )
+    strategy.updatePeg(1000, {"from": gov})
+    strategy.updateSlippageProtectionOut(1000, {"from": gov})
+    strategy.updateReferal(gov, {"from": gov})
+    strategy.updateReportLoss(False, {"from": gov})
+    strategy.updateDontInvest(False, {"from": gov})
 
     strategy.setStrategist(strategist, {"from": gov})
     name = strategy.name()
     print("Strategy Name:", name)
 
     with brownie.reverts():
-        strategy.setMaxLoss(7, {"from": whale})
+        strategy.updateMaxSingleTrade(7, {"from": whale})
 
     with brownie.reverts():
-        strategy.withdrawFromYVault(7, {"from": whale})
+        strategy.updateSlippageProtectionOut(7, {"from": whale})
 
     with brownie.reverts():
-        strategy.setDustThreshold(100_0001, {"from": gov})
+        strategy.updatePeg(7, {"from": whale})
 
-    # make sure we can do this
-    strategy.withdrawFromYVault(0, {"from": gov})
-    strategy.setDustThreshold(69, {"from": gov})
+    with brownie.reverts():
+        strategy.updateReportLoss(False, {"from": whale})
+
+    with brownie.reverts():
+        strategy.updateDontInvest(False, {"from": whale})
+
+    with brownie.reverts():
+        strategy.updateReferal(gov, {"from": whale})
 
 
 # test sweeping out tokens
