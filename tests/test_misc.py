@@ -116,9 +116,6 @@ def test_revoke_strategy_from_vault(
     # revoke and harvest
     vault.revokeStrategy(strategy.address, {"from": gov})
 
-    # when revoking, make sure to increase our max swap size so we can fully exit
-    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
-
     (profit, loss, extra) = harvest_strategy(
         use_v3,
         strategy,
@@ -231,9 +228,8 @@ def test_setters(
         target,
         destination_vault,
     )
-    strategy.updatePeg(1000, {"from": gov})
+    strategy.updatePeg(69, {"from": gov})
     strategy.updateSlippageProtectionOut(1000, {"from": gov})
-    strategy.updateReferal(gov, {"from": gov})
     strategy.updateReportLoss(False, {"from": gov})
     strategy.updateDontInvest(False, {"from": gov})
 
@@ -251,13 +247,13 @@ def test_setters(
         strategy.updatePeg(7, {"from": whale})
 
     with brownie.reverts():
+        strategy.updatePeg(96, {"from": gov})
+
+    with brownie.reverts():
         strategy.updateReportLoss(False, {"from": whale})
 
     with brownie.reverts():
         strategy.updateDontInvest(False, {"from": whale})
-
-    with brownie.reverts():
-        strategy.updateReferal(gov, {"from": whale})
 
 
 # test sweeping out tokens

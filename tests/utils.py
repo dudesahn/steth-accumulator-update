@@ -72,7 +72,9 @@ def trade_handler_action(strategy, profit_amount):
     # ******* need to airdrop in some steth to simulate the rebase
     steth_whale = accounts.at("0x176F3DAb24a159341c0509bB36B833E7fdd0a132", force=True)
     steth = Contract("0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84")
-    steth.transfer(strategy, profit_amount, {"from": steth_whale})
+    # only airdrop in profit if our strategy has TVL that would be generating yield
+    if strategy.estimatedTotalAssets() > 0 and profit_amount > 0:
+        steth.transfer(strategy, profit_amount, {"from": steth_whale})
 
     # sleep 5 days so share price normalizes
     chain.sleep(86400 * 5)

@@ -56,13 +56,17 @@ def test_liquidatePosition(
     starting_share_price = vault.pricePerShare()
     initial_strategy_assets = strategy.estimatedTotalAssets()
     loose_want = token.balanceOf(vault)
-    # in the V2 dai vault we have some extra debt not assigned to our main strategy
+    # in the WETH V2 vault we have some extra debt not assigned to our main strategy
     other_debt = vault.totalDebt() - strategy_params["totalDebt"]
 
     ################# SEND ALL FUNDS AWAY. ADJUST AS NEEDED PER STRATEGY. #################
-    to_send = destination_vault.balanceOf(strategy)
-    destination_vault.transfer(gov, to_send, {"from": strategy})
-    assert strategy.estimatedTotalAssets() == 0
+    before_weth = strategy.wantBalance()
+    before_steth = strategy.stethBalance()
+    steth = Contract(strategy.stETH())
+    if before_weth > 0:
+        token.transfer(gov, before_weth, {"from": strategy})
+    steth.transfer(gov, before_steth, {"from": strategy})
+    assert strategy.estimatedTotalAssets() == 0  # we may not get all of the stETH out
 
     # check our current status
     print("\nAfter fund transfer, before withdrawal")
@@ -211,62 +215,14 @@ def test_locked_funds(
     use_v3,
     destination_vault,
 ):
-    if use_v3:
+    if use_v3 or not use_v3:
+        # ignore either way; not relevant for the stETH accumulator
         return
-
-    # should update this one for Router
-    ## deposit to the vault after approving
-    starting_whale = token.balanceOf(whale)
-    token.approve(vault, 2**256 - 1, {"from": whale})
-    vault.deposit(amount, {"from": whale})
-    (profit, loss, extra) = harvest_strategy(
-        use_v3,
-        strategy,
-        token,
-        gov,
-        profit_whale,
-        profit_amount,
-        target,
-        destination_vault,
-    )
-
-    # check our current status
-    print("\nAfter first harvest")
-    strategy_params = check_status(strategy, vault)
-
-    # evaluate our current total assets
-    old_assets = vault.totalAssets()
-    initial_strategy_assets = strategy.estimatedTotalAssets()
-    initial_debt = strategy_params["totalDebt"]
-    starting_share_price = vault.pricePerShare()
-    chain.sleep(sleep_time)
-
-    # send away our funds from our destination strategy
-    voter = Contract(target.proxy()).proxy()
-    gauge = Contract(target.gauge())
-    to_send = gauge.balanceOf(voter)
-    print("Gauge Balance of Vault", to_send)
-    gauge.withdraw(to_send, {"from": voter})
-    token.transfer(gov, to_send, {"from": voter})
-    assert target.estimatedTotalAssets() == 0
-
-    strategy.setDoHealthCheck(False, {"from": gov})
-    (profit, loss, extra) = harvest_strategy(
-        use_v3,
-        strategy,
-        token,
-        gov,
-        profit_whale,
-        0,
-        target,
-        destination_vault,
-    )
-
-    print("Loss:", loss, "\nInitial Deposit:", amount)
 
 
 # there also may be situations where the destination protocol is exploited or funds are locked but you still hold the same number of wrapper tokens
 # though liquity doesn't have this as an option, it's important to test if it is to make sure debt is maintained properly in the case future assets free up
+# also see what happens if during locked funds we set our debt ratio to zero
 def test_locked_funds_zero_dr(
     gov,
     token,
@@ -285,62 +241,9 @@ def test_locked_funds_zero_dr(
     use_v3,
     destination_vault,
 ):
-    if use_v3:
+    if use_v3 or not use_v3:
+        # ignore either way; not relevant for the stETH accumulator
         return
-
-    # should update this one for Router
-    ## deposit to the vault after approving
-    starting_whale = token.balanceOf(whale)
-    token.approve(vault, 2**256 - 1, {"from": whale})
-    vault.deposit(amount, {"from": whale})
-    (profit, loss, extra) = harvest_strategy(
-        use_v3,
-        strategy,
-        token,
-        gov,
-        profit_whale,
-        profit_amount,
-        target,
-        destination_vault,
-    )
-
-    # check our current status
-    print("\nAfter first harvest")
-    strategy_params = check_status(strategy, vault)
-
-    # evaluate our current total assets
-    old_assets = vault.totalAssets()
-    initial_strategy_assets = strategy.estimatedTotalAssets()
-    initial_debt = strategy_params["totalDebt"]
-    starting_share_price = vault.pricePerShare()
-    chain.sleep(sleep_time)
-
-    # send away our funds from our destination strategy
-    voter = Contract(target.proxy()).proxy()
-    gauge = Contract(target.gauge())
-    to_send = gauge.balanceOf(voter)
-    print("Gauge Balance of Vault", to_send)
-    gauge.withdraw(to_send, {"from": voter})
-    token.transfer(gov, to_send, {"from": voter})
-    assert target.estimatedTotalAssets() == 0
-
-    # set our debtRatio to zero to return all debt
-    vault.updateStrategyDebtRatio(strategy, 0, {"from": gov})
-    strategy.setMaxLoss(10_000, {"from": gov})
-
-    strategy.setDoHealthCheck(False, {"from": gov})
-    (profit, loss, extra) = harvest_strategy(
-        use_v3,
-        strategy,
-        token,
-        gov,
-        profit_whale,
-        0,
-        target,
-        destination_vault,
-    )
-
-    print("Loss:", loss, "\nInitial Deposit:", amount)
 
 
 # here we take a loss intentionally without entering emergencyExit
@@ -387,12 +290,17 @@ def test_rekt(
     initial_strategy_assets = strategy.estimatedTotalAssets()
     initial_debt = strategy_params["totalDebt"]
     starting_share_price = vault.pricePerShare()
-    # in the V2 dai vault we have some extra debt not assigned to our main strategy
+    # in the WETH V2 vault we have some extra debt not assigned to our main strategy
     other_debt = vault.totalDebt() - strategy_params["totalDebt"]
 
     ################# SEND ALL FUNDS AWAY. ADJUST AS NEEDED PER STRATEGY. #################
-    to_send = destination_vault.balanceOf(strategy)
-    destination_vault.transfer(gov, to_send, {"from": strategy})
+    before_weth = strategy.wantBalance()
+    before_steth = strategy.stethBalance()
+    steth = Contract(strategy.stETH())
+    if before_weth > 0:
+        token.transfer(gov, before_weth, {"from": strategy})
+    steth.transfer(gov, before_steth, {"from": strategy})
+    assert strategy.estimatedTotalAssets() == 0  # we may not get all of the stETH out
 
     # confirm we emptied the strategy
     assert strategy.estimatedTotalAssets() == 0

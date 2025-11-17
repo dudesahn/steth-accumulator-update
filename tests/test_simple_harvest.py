@@ -1,6 +1,6 @@
 from brownie import chain, Contract
 from utils import harvest_strategy
-import pytest
+import pytest, brownie
 
 
 # test the our strategy's ability to deposit, harvest, and withdraw, with different optimal deposit tokens if we have them
@@ -136,3 +136,140 @@ def test_simple_harvest(
         )
     else:
         assert token.balanceOf(whale) > starting_whale
+
+
+# test a realistic flow of slowly winding down the strategy with the core migration, harvests and redemptions
+def test_migrate_harvest_redeem(
+    gov,
+    token,
+    vault,
+    whale,
+    strategy,
+    amount,
+    sleep_time,
+    is_slippery,
+    no_profit,
+    profit_whale,
+    profit_amount,
+    target,
+    use_yswaps,
+    is_gmx,
+    use_v3,
+    destination_vault,
+):
+    ## deposit to the vault after approving
+    starting_whale = token.balanceOf(whale)
+    token.approve(vault, 2**256 - 1, {"from": whale})
+    vault.deposit(amount, {"from": whale})
+    newWhale = token.balanceOf(whale)
+
+    print("Deposited to vault from whale")
+
+    # harvest, store asset amount
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+        destination_vault,
+    )
+    old_assets = vault.totalAssets()
+    assert old_assets > 0
+    assert strategy.estimatedTotalAssets() > 0
+
+    # simulate profits
+    chain.sleep(sleep_time)
+
+    # start a redemption
+    nft_ids = strategy.pendingWithdrawalRequests()
+    assert len(nft_ids) == 0
+    assert strategy.pendingRedemptions() == 0
+    before_assets = strategy.estimatedTotalAssets()
+    print("Assets before initiating withdrawal:", before_assets / 1e18)
+
+    # check that permissions work
+    with brownie.reverts():
+        strategy.initiateLSTWithdrawal(10e18, {"from": whale})
+
+    print("\nSend 10 stETH to withdraw")
+    tx = strategy.initiateLSTWithdrawal(10e18, {"from": gov})
+    assert strategy.pendingRedemptions() > 0
+    new_redemptions = strategy.pendingRedemptions()
+    print("NFT received:", tx.return_value)
+    after_assets = strategy.estimatedTotalAssets()
+    assert after_assets < before_assets
+    print("Assets after initiating withdrawal:", after_assets / 1e18)
+
+    # check that we have an NFT
+    nft_ids = strategy.pendingWithdrawalRequests()
+    assert len(nft_ids) == 1
+    print("Withdrawal ID:", nft_ids)
+
+    # find some sucker with ETH to steal
+    withdrawal_queue = Contract("0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1")
+    finalized_nft = withdrawal_queue.getLastFinalizedRequestId()
+    eth_to_steal = 0
+    print("\nSteal an NFT with at least 10 ETH finalized but not claimed")
+    # check the withdrawal queue's finalized NFTs, finds the first with decent steth, and transfers it into strategy. start with last finalized request
+    while eth_to_steal < 10e18:
+        withdrawal_status = withdrawal_queue.getWithdrawalStatus([finalized_nft])[0]
+        assert withdrawal_status["isFinalized"]
+        if not withdrawal_status["isClaimed"]:
+            eth_to_steal = withdrawal_status["amountOfStETH"]
+        if eth_to_steal < 10e18:
+            finalized_nft -= 1
+        else:
+            print(
+                "Found a good NFT:",
+                finalized_nft,
+                "With this much ETH:",
+                eth_to_steal / 1e18,
+            )
+
+    # steal the NFT
+    nft_owner = withdrawal_status["owner"]
+    withdrawal_queue.transferFrom(
+        nft_owner, strategy, finalized_nft, {"from": nft_owner}
+    )
+    assert len(strategy.pendingWithdrawalRequests()) > 1
+
+    # transferring in an NFT won't update our pending redemption state var
+    assert strategy.pendingRedemptions() == new_redemptions
+
+    # check our assets
+    after_assets = strategy.estimatedTotalAssets()
+    assert after_assets < before_assets
+    print("Assets after transferring in new NFT:", after_assets / 1e18)
+
+    # check that permissions work
+    with brownie.reverts():
+        strategy.claimLSTWithdrawal(finalized_nft, {"from": whale})
+
+    # withdraw from the stolen NFT
+    print("\nWithdraw from the stolen NFT")
+    tx = strategy.claimLSTWithdrawal(finalized_nft, {"from": gov})
+    print("ETH received:", tx.return_value / 1e18)
+    assert tx.return_value == eth_to_steal
+
+    # withdrawing from the stolen NFT should zero our pending redemptions
+    assert strategy.pendingRedemptions() == 0
+
+    # check our assets
+    after_assets = strategy.estimatedTotalAssets()
+    assert after_assets >= before_assets
+    print("Assets after transferring in new NFT:", after_assets / 1e18)
+    assert len(strategy.pendingWithdrawalRequests()) == 1
+
+    # have gov pluck out the other NFT
+    with brownie.reverts():
+        strategy.rescueNft(strategy.pendingWithdrawalRequests()[0], {"from": whale})
+
+    strategy.rescueNft(strategy.pendingWithdrawalRequests()[0], {"from": gov})
+    nft_ids = strategy.pendingWithdrawalRequests()
+    assert len(nft_ids) == 0
+
+    # rescuing NFT should leave this at zero since it's already there
+    assert strategy.pendingRedemptions() == 0

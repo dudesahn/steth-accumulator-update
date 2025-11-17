@@ -64,8 +64,13 @@ def test_empty_strat(
     chain.sleep(sleep_time)
 
     ################# SEND ALL FUNDS AWAY. ADJUST AS NEEDED PER STRATEGY. #################
-    to_send = destination_vault.balanceOf(strategy)
-    destination_vault.transfer(gov, to_send, {"from": strategy})
+    before_weth = strategy.wantBalance()
+    before_steth = strategy.stethBalance()
+    steth = Contract(strategy.stETH())
+    if before_weth > 0:
+        token.transfer(gov, before_weth, {"from": strategy})
+    steth.transfer(gov, before_steth, {"from": strategy})
+    assert strategy.estimatedTotalAssets() == 0  # we may not get all of the stETH out
 
     # confirm we emptied the strategy
     assert strategy.estimatedTotalAssets() == 0
@@ -155,10 +160,8 @@ def test_empty_strat(
         assert strategy_params["debtRatio"] == 1
     else:
         # note that since the DAI vault doesn't have all debt allocated to our strategy, we actually don't get this 100% reduction in debtRatio
-        if not use_v3:
-            assert strategy_params["debtRatio"] == 0
-        else:
-            assert strategy_params["debtRatio"] == 1
+        # and we know that WETH V2 only allocates ~85% to the stETH accumulator
+        assert strategy_params["debtRatio"] == 1
     assert strategy_params["totalLoss"] > 0
     if not is_gmx:
         if is_migration:
