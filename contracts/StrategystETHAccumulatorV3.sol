@@ -11,7 +11,20 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
     event WithdrawalLoss(uint256 toWithdraw, uint256 received, uint256 loss);
 
-    bool public checkLiqGauge = true;
+    uint256 public maxSingleTrade; // only used during harvests
+    uint256 public slippageProtectionOut; // = 50; //out of 10000. 50 = 0.5%
+    bool public reportLoss = true;
+    bool public dontInvest = true;
+
+    uint256 public peg = 95; // 100 = 1%
+
+    // new stuff for redemptions
+    uint256 public pendingRedemptions;
+    IQueue internal constant WITHDRAWAL_QUEUE =
+        IQueue(0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1); // stETH withdrawal queue
+    address internal constant WETH_1 =
+        0xc56413869c6CDf96496f2b1eF801fEDBdFA7dDB0;
+
     ICurveFi public constant StableSwapSTETH =
         ICurveFi(0xDC24316b9AE028F1497c275EB9192a3Ea0f67022);
     IWETH public constant weth =
@@ -19,22 +32,11 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     ISteth public constant stETH =
         ISteth(0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84);
 
-    address private referal = 0x16388463d60FFE0661Cf7F1f31a7D658aC790ff7; //stratms. for recycling and redepositing
-    uint256 public maxSingleTrade;
     uint256 public constant DENOMINATOR = 10_000;
-    uint256 public slippageProtectionOut; // = 50; //out of 10000. 50 = 0.5%
-
-    uint256 public pendingRedemptions;
-
-    bool public reportLoss = false;
-    bool public dontInvest = true;
-
-    uint256 public peg = 95; // 100 = 1%
+    address internal constant REFERRAL =
+        0x16388463d60FFE0661Cf7F1f31a7D658aC790ff7; //stratms. for recycling and redepositing
 
     // stETH specific constants
-    address internal constant WITHDRAWAL_QUEUE =
-        0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1; // stETH withdrawal queue
-
     int128 internal constant WETHID = 0;
     int128 internal constant STETHID = 1;
 
@@ -52,10 +54,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     //we get eth
     receive() external payable {}
 
-    function updateReferal(address _referal) external onlyEmergencyAuthorized {
-        referal = _referal;
-    }
-
     function updateMaxSingleTrade(uint256 _maxSingleTrade)
         external
         onlyVaultManagers
@@ -64,7 +62,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     }
 
     function updatePeg(uint256 _peg) external onlyVaultManagers {
-        require(_peg <= 1_000); //limit peg to max 10%
+        require(_peg <= 95); // limit peg to max 0.95%
         peg = _peg;
     }
 
@@ -118,6 +116,15 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         return stETH.balanceOf(address(this));
     }
 
+    /// @notice Check if our strategy as any pending stETH withdrawals via Lido's withdrawal queue.
+    function pendingWithdrawalRequests()
+        external
+        view
+        returns (uint256[] memory requestIds)
+    {
+        return WITHDRAWAL_QUEUE.getWithdrawalRequests(address(this));
+    }
+
     function prepareReturn(uint256 _debtOutstanding)
         internal
         override
@@ -138,13 +145,15 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
             uint256 toWithdraw = _profit + _debtOutstanding;
 
             if (toWithdraw > wantBal) {
-                toWithdraw = Math.min(toWithdraw, stethBalance());
-                uint256 willWithdraw = Math.min(maxSingleTrade, toWithdraw);
-                uint256 withdrawn = _divest(willWithdraw); //we step our withdrawals. adjust max single trade to withdraw more
+                // withdraw some extra, but not more than we have or above our maxSingleTrade
+                toWithdraw = Math.min(maxSingleTrade, toWithdraw);
+                uint256 willWithdraw = (toWithdraw * (10_000 + peg)) / 10_000;
+
+                uint256 withdrawn = _divest(willWithdraw); // we step our withdrawals. adjust max single trade to withdraw more
                 // assume that we get peg level of slippage on our withdrawal
                 if (withdrawn < willWithdraw) {
-                    // _loss = willWithdraw - withdrawn; // comment this and the line below out to skip taking losses on harvest withdrawals
-                    emit WithdrawalLoss(willWithdraw, withdrawn, _loss); // ****ONLY FOR TESTING REMOVE BEFORE DEPLOY
+                    uint256 fake_loss = willWithdraw - withdrawn; // comment this and the line below out to skip taking losses on harvest withdrawals
+                    emit WithdrawalLoss(willWithdraw, withdrawn, fake_loss); // ****ONLY FOR TESTING REMOVE BEFORE DEPLOY...probably this whole if statement
                 }
                 // check in on our new amount of tokens after withdrawing
                 // loss on divesting is only a true loss if it's bigger than our peg value
@@ -171,6 +180,11 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
             if (reportLoss) {
                 _loss = debt - totalAssets;
             }
+        }
+
+        // don't take any losses while we've got pending withdrawals
+        if (pendingRedemptions > 0) {
+            _loss = 0;
         }
     }
 
@@ -212,7 +226,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         //test if we should buy instead of mint
         uint256 out = StableSwapSTETH.get_dy(WETHID, STETHID, _amount);
         if (out < _amount) {
-            stETH.submit{value: _amount}(referal);
+            stETH.submit{value: _amount}(REFERRAL);
         } else {
             StableSwapSTETH.exchange{value: _amount}(
                 WETHID,
@@ -227,6 +241,8 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
     function _divest(uint256 _amount) internal returns (uint256) {
         uint256 before = wantBalance();
+
+        _amount = Math.min(_amount, stethBalance());
 
         if (_amount > 0) {
             uint256 slippageAllowance = (_amount *
@@ -291,74 +307,87 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
     /// @notice Initiate stETH withdrawal through Lido queue for 1:1 redemption
     /// @param _amount Amount of LST to queue for withdrawal
-    /// @return returnData Return data from the withdrawal request
+    /// @return nftId Withdrawal ID number from the withdrawal request
     function initiateLSTWithdrawal(uint256 _amount)
         external
         onlyEmergencyAuthorized
-        returns (bytes memory returnData)
+        returns (uint256 nftId)
     {
         _amount = Math.min(_amount, stethBalance());
-        require(_amount > 100, "!minimum"); // minimum amount to withdraw
-        require(_amount <= 1_000e18, "!minimum"); // maximum amount to withdraw in one request
-        pendingRedemptions += _amount;
-        return _initiateLSTWithdrawal(_amount);
-    }
+        require(
+            _amount > WITHDRAWAL_QUEUE.MIN_STETH_WITHDRAWAL_AMOUNT(),
+            "!minimum"
+        ); // minimum amount to withdraw
+        require(
+            _amount <= WITHDRAWAL_QUEUE.MAX_STETH_WITHDRAWAL_AMOUNT(),
+            "!maximum"
+        ); // maximum amount to withdraw in one request
 
-    /// @notice Claim ETH from completed Lido withdrawal request
-    /// @param _claimData The claim data from the withdrawal request
-    /// @return _amount Amount of LST claimed
-    function claimLSTWithdrawal(bytes memory _claimData)
-        external
-        onlyEmergencyAuthorized
-        returns (uint256)
-    {
-        uint256 _redeemedAmount = _claimLSTWithdrawal(_claimData);
-        pendingRedemptions = _redeemedAmount >= pendingRedemptions
-            ? 0
-            : pendingRedemptions - _redeemedAmount;
-        return _redeemedAmount;
+        pendingRedemptions += _amount;
+
+        return _initiateLSTWithdrawal(_amount)[0];
     }
 
     /// @notice Initiate stETH withdrawal through Lido queue for 1:1 redemption
     /// @param _amount Amount of LST to queue for withdrawal
-    /// @return returnData Return data from the withdrawal request
+    /// @return requestIds Array of NFT IDs we created via our withdrawal
     function _initiateLSTWithdrawal(uint256 _amount)
         internal
-        returns (bytes memory returnData)
+        returns (uint256[] memory requestIds)
     {
-        IERC20(address(stETH)).safeApprove(WITHDRAWAL_QUEUE, _amount);
+        IERC20(address(stETH)).safeApprove(address(WITHDRAWAL_QUEUE), _amount);
 
         uint256[] memory _amounts = new uint256[](1);
         _amounts[0] = _amount;
 
-        uint256[] memory requestIds = IQueue(WITHDRAWAL_QUEUE)
-            .requestWithdrawals(_amounts, address(this));
-
-        return abi.encode(requestIds);
+        requestIds = WITHDRAWAL_QUEUE.requestWithdrawals(
+            _amounts,
+            address(this)
+        );
     }
 
     /// @notice Claim ETH from completed Lido withdrawal request
-    /// @param _claimData The claim data from the withdrawal request
-    function _claimLSTWithdrawal(bytes memory _claimData)
+    /// @param _claimId The claim ID from the withdrawal request
+    /// @return _redeemedAmount Amount of LST redeemed
+    function claimLSTWithdrawal(uint256 _claimId)
+        external
+        onlyEmergencyAuthorized
+        returns (uint256 _redeemedAmount)
+    {
+        _redeemedAmount = _claimLSTWithdrawal(_claimId);
+        pendingRedemptions = _redeemedAmount >= pendingRedemptions
+            ? 0
+            : pendingRedemptions - _redeemedAmount;
+    }
+
+    /// @notice Claim ETH from completed Lido withdrawal request
+    /// @param _claimId The claim ID from the withdrawal request
+    function _claimLSTWithdrawal(uint256 _claimId)
         internal
         returns (uint256 _redeemedAmount)
     {
-        uint256 _requestId = abi.decode(_claimData, (uint256));
-
         uint256 preBalance = address(this).balance;
-        IQueue(WITHDRAWAL_QUEUE).claimWithdrawal(_requestId);
+        WITHDRAWAL_QUEUE.claimWithdrawal(_claimId);
         _redeemedAmount = address(this).balance - preBalance;
 
         // Convert received ETH to WETH
-        IWETH(address(want)).deposit{value: address(this).balance}();
+        weth.deposit{value: address(this).balance}();
+
+        // send peg portion to WETH-1
+        if (peg > 0) {
+            uint256 toSend = (_redeemedAmount * peg) / 10_000;
+            weth.transfer(WETH_1, toSend);
+        }
     }
 
     /// @notice Rescue a stuck withdrawal NFT. Only may be called by governance.
     function rescueNft(uint256 _requestId) external onlyGovernance {
-        IQueue(WITHDRAWAL_QUEUE).safeTransferFrom(
+        WITHDRAWAL_QUEUE.safeTransferFrom(
             address(this),
             governance(),
             _requestId
         );
+        // even if this isn't our only NFT, zero redemptions assuming that we will sweep them all
+        pendingRedemptions = 0;
     }
 }

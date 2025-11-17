@@ -304,6 +304,9 @@ def strategy(
     print("Vault balance of want after migration:", token.balanceOf(vault) / 1e18)
     print("New strategy stETH after migration:", steth.balanceOf(strategy) / 1e18)
 
+    # for stETH accumulator, turn off our limit on max to swap at once for several of our debt tests
+    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
+
     # turn on health check for first harvest since we're inheriting profit
     # strategy.setDoHealthCheck(False, {"from": gov})
 
@@ -349,7 +352,7 @@ def use_old():
 # use this if we're doing a V2 or V3 router
 @pytest.fixture(scope="session")
 def use_v3():
-    yield True
+    yield False
 
 
 # flag to denote if we're migrating from existing strategies and thus will likely have profit on our first harvest
@@ -367,7 +370,7 @@ def is_gmx():
 # use this similarly to how we use use_yswaps
 @pytest.fixture(scope="session")
 def is_router():
-    yield True
+    yield False
 
 
 @pytest.fixture(scope="session")

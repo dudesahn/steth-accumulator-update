@@ -21,6 +21,15 @@ interface IQueue {
         address _to,
         uint256 _requestId
     ) external;
+
+    function getWithdrawalRequests(address)
+        external
+        view
+        returns (uint256[] memory);
+
+    function MAX_STETH_WITHDRAWAL_AMOUNT() external view returns (uint256);
+
+    function MIN_STETH_WITHDRAWAL_AMOUNT() external view returns (uint256);
 }
 
 interface IWETH is IERC20 {

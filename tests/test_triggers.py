@@ -87,13 +87,8 @@ def test_triggers(
     ################# GENERATE CLAIMABLE PROFIT HERE AS NEEDED #################
     # take profit in our destination vault
     trade_handler_action(
-        target,
-        token,
-        gov,
-        profit_whale,
+        strategy,
         profit_amount,
-        use_v3,
-        destination_vault,
     )
 
     # set our max delay so we trigger true, then set it back to 21 days

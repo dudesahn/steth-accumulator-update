@@ -417,9 +417,13 @@ def test_emergency_exit_with_loss(
 
     ################# SEND ALL FUNDS AWAY. ADJUST AS NEEDED PER STRATEGY. #################
     # send away all funds, will need to alter this based on strategy
-    to_send = destination_vault.balanceOf(strategy)
-    destination_vault.transfer(gov, to_send, {"from": strategy})
-    assert strategy.estimatedTotalAssets() == 0
+    before_weth = strategy.wantBalance()
+    before_steth = strategy.stethBalance()
+    steth = Contract(strategy.stETH())
+    if before_weth > 0:
+        token.transfer(gov, before_weth, {"from": strategy})
+    steth.transfer(gov, before_steth, {"from": strategy})
+    assert strategy.estimatedTotalAssets() == 0  # we may not get all of the stETH out
 
     ################# SET FALSE IF PROFIT EXPECTED. ADJUST AS NEEDED. #################
     # set this true if no profit on this test. it is normal for a strategy to not generate profit here.

@@ -42,9 +42,6 @@ def test_change_debt(
     print("\nAfter first harvest, before DR reduction")
     strategy_params = check_status(strategy, vault)
 
-    # for stETH accumulator in this test, turn off our limit on max to swap at once
-    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
-
     # evaluate our current total assets
     old_assets = vault.totalAssets()
     initial_strategy_assets = strategy.estimatedTotalAssets()
@@ -215,6 +212,16 @@ def test_change_debt(
         target,
         destination_vault,
     )
+
+    # make sure we made a profit with no losses
+    if not no_profit:
+        assert profit > 0
+        assert loss == 0
+        assert vault.totalAssets() > old_assets
+
+    # ideally we fully empty the strategy out when setting DR to 0
+    assert strategy.estimatedTotalAssets() == 0
+
     print("Profit from our final harvest:", profit)
 
     # withdraw and confirm we made money, or at least that we have about the same (profit whale has to be different from normal whale)
@@ -264,9 +271,6 @@ def test_change_debt_with_profit(
     # check our current status
     print("\nAfter first harvest, before DR reduction")
     strategy_params = check_status(strategy, vault)
-
-    # for stETH accumulator in this test, turn off our limit on max to swap at once
-    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
 
     # evaluate our current total assets
     old_assets = vault.totalAssets()

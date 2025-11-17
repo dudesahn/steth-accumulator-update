@@ -54,9 +54,13 @@ def test_emergency_exit_with_no_loss(
     other_debt = vault.totalDebt() - strategy_params["totalDebt"]
 
     ################# SEND ALL FUNDS AWAY. ADJUST AS NEEDED PER STRATEGY. #################
-    to_send = destination_vault.balanceOf(strategy)
-    destination_vault.transfer(gov, to_send, {"from": strategy})
-    assert strategy.estimatedTotalAssets() == 0
+    before_weth = strategy.wantBalance()
+    before_steth = strategy.stethBalance()
+    steth = Contract(strategy.stETH())
+    if before_weth > 0:
+        token.transfer(gov, before_weth, {"from": strategy})
+    steth.transfer(gov, before_steth, {"from": strategy})
+    assert strategy.estimatedTotalAssets() == 0  # we may not get all of the stETH out
 
     ################# SET FALSE IF PROFIT EXPECTED. ADJUST AS NEEDED. #################
     # set this true if no profit on this test. it is normal for a strategy to not generate profit here.
@@ -88,7 +92,9 @@ def test_emergency_exit_with_no_loss(
 
     ################# GOV SENDS IT BACK, ADJUST AS NEEDED. #################
     # gov sends it back
-    destination_vault.transfer(strategy, to_send, {"from": gov})
+    if before_weth > 0:
+        token.transfer(strategy, before_weth, {"from": gov})
+    steth.transfer(strategy, before_steth, {"from": gov})
 
     # check our current status
     print("\nAfter getting funds back")
