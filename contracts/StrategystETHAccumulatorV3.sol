@@ -8,10 +8,6 @@ import {ISteth, IQueue, IWETH, ICurveFi} from "./interfaces/StethInterfaces.sol"
 
 contract StrategystETHAccumulatorV3 is BaseStrategy {
     using SafeERC20 for IERC20;
-    
-    event ReportStatus(uint256 profit, uint256 loss, uint256 debtPayment, uint256 wantBalance);
-    event ProfitCheck(uint256 assets, uint256 debt);
-    event CheckBalances(uint256 stethBalance, uint256 wethBalance);
 
     /// @notice Maximum size of stETH or WETH we'll swap at once during harvests
     uint256 public maxSingleTrade;
@@ -172,8 +168,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 // check in on our new amount of tokens after withdrawing
                 wantBal = wantBalance();
                 totalAssets = estimatedTotalAssets();
-                
-                emit CheckBalances(stethBalance(), wantBal);
 
                 // redo our check for profit now that we've swapped stETH for WETH
                 if (totalAssets > debt) {
@@ -201,9 +195,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         if (pendingRedemptions > 0) {
             _loss = 0;
         }
-        
-        emit ReportStatus(_profit, _loss, _debtPayment, wantBal);
-        emit ProfitCheck(totalAssets, debt);
     }
 
     function ethToWant(uint256 _amtInWei)
