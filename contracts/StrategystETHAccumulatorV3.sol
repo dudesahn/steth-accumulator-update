@@ -8,14 +8,25 @@ import {ISteth, IQueue, IWETH, ICurveFi} from "./interfaces/StethInterfaces.sol"
 
 contract StrategystETHAccumulatorV3 is BaseStrategy {
     using SafeERC20 for IERC20;
+    
+    event ReportStatus(uint256 profit, uint256 loss, uint256 debtPayment, uint256 wantBalance);
+    event ProfitCheck(uint256 assets, uint256 debt);
+    event CheckBalances(uint256 stethBalance, uint256 wethBalance);
 
-    event WithdrawalLoss(uint256 toWithdraw, uint256 received, uint256 loss);
+    /// @notice Maximum size of stETH or WETH we'll swap at once during harvests
+    uint256 public maxSingleTrade;
 
-    uint256 public maxSingleTrade; // only used during harvests
-    uint256 public slippageProtectionOut; // = 50; //out of 10000. 50 = 0.5%
+    /// @notice Max slippage we allow on swaps from stETH to ETH, in bps. 50 = 0.5%.
+    uint256 public slippageProtectionOut;
+
+    /// @notice Whether or not we allow losses to be reported.
+    /// @dev Useful when scaling up since we discount stETH holdings by peg value. Defaults to true.
     bool public reportLoss = true;
+
+    /// @notice Whether we prevent conversion of more WETH to stETH
     bool public dontInvest = true;
 
+    /// @notice Value to discount our stETH holdings by, in bps.
     uint256 public peg = 95; // 100 = 1%
 
     // new stuff for redemptions
@@ -62,7 +73,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     }
 
     function updatePeg(uint256 _peg) external onlyVaultManagers {
-        require(_peg <= 95); // limit peg to max 0.95%
+        require(_peg <= 95); // limit peg to max 0.95%, setting from legacy strategy
         peg = _peg;
     }
 
@@ -136,29 +147,34 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     {
         uint256 wantBal = wantBalance();
         uint256 totalAssets = estimatedTotalAssets();
-
         uint256 debt = vault.strategies(address(this)).totalDebt;
 
         if (totalAssets >= debt) {
             _profit = totalAssets - debt;
 
-            uint256 toWithdraw = _profit + _debtOutstanding;
+            uint256 needed = _profit + _debtOutstanding;
 
-            if (toWithdraw > wantBal) {
-                // withdraw some extra, but not more than we have or above our maxSingleTrade
+            if (needed > wantBal) {
+                // reduce amount to withdraw by what we already have
+                uint256 toWithdraw = needed - wantBal;
+
+                // we step our withdrawals. adjust max single trade to withdraw more
                 toWithdraw = Math.min(maxSingleTrade, toWithdraw);
-                uint256 willWithdraw = (toWithdraw * (10_000 + peg)) / 10_000;
 
-                uint256 withdrawn = _divest(willWithdraw); // we step our withdrawals. adjust max single trade to withdraw more
-                // assume that we get peg level of slippage on our withdrawal
-                if (withdrawn < willWithdraw) {
-                    uint256 fake_loss = willWithdraw - withdrawn; // comment this and the line below out to skip taking losses on harvest withdrawals
-                    emit WithdrawalLoss(willWithdraw, withdrawn, fake_loss); // ****ONLY FOR TESTING REMOVE BEFORE DEPLOY...probably this whole if statement
-                }
+                // withdraw some extra buffer for swap slippage
+                toWithdraw =
+                    (toWithdraw * (10_000 + slippageProtectionOut)) /
+                    10_000;
+
+                // shouldn't see losses here as we limit swap slippage and have peg buffer
+                _divest(toWithdraw);
+
                 // check in on our new amount of tokens after withdrawing
-                // loss on divesting is only a true loss if it's bigger than our peg value
                 wantBal = wantBalance();
                 totalAssets = estimatedTotalAssets();
+                
+                emit CheckBalances(stethBalance(), wantBal);
+
                 // redo our check for profit now that we've swapped stETH for WETH
                 if (totalAssets > debt) {
                     _profit = totalAssets - debt;
@@ -170,8 +186,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
             // profit + _debtOutstanding must be <= wantbalance. Prioritise profit first
             if (wantBal < _profit) {
                 _profit = wantBal;
-            } else if (wantBal < toWithdraw) {
-                // we will likely hit this if we reducing debt via swaps since we get some slippage
+            } else if (wantBal < needed) {
                 _debtPayment = wantBal - _profit;
             } else {
                 _debtPayment = _debtOutstanding;
@@ -186,6 +201,9 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         if (pendingRedemptions > 0) {
             _loss = 0;
         }
+        
+        emit ReportStatus(_profit, _loss, _debtPayment, wantBal);
+        emit ProfitCheck(totalAssets, debt);
     }
 
     function ethToWant(uint256 _amtInWei)

@@ -1,4 +1,4 @@
-from brownie import chain, Contract
+from brownie import chain, Contract, accounts
 from utils import harvest_strategy
 import pytest, brownie
 
@@ -273,3 +273,266 @@ def test_migrate_harvest_redeem(
 
     # rescuing NFT should leave this at zero since it's already there
     assert strategy.pendingRedemptions() == 0
+
+
+# test migrating and pulling all of the funds out via the curve LP pool
+def test_basic_harvest_empty(
+    gov,
+    token,
+    vault,
+    whale,
+    strategy,
+    amount,
+    sleep_time,
+    is_slippery,
+    no_profit,
+    profit_whale,
+    profit_amount,
+    target,
+    use_yswaps,
+    is_gmx,
+    use_v3,
+    destination_vault,
+):
+    ## deposit to the vault after approving
+    starting_whale = token.balanceOf(whale)
+    token.approve(vault, 2**256 - 1, {"from": whale})
+    vault.deposit(amount, {"from": whale})
+    newWhale = token.balanceOf(whale)
+
+    print("Deposited to vault from whale")
+
+    # harvest, store asset amount
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+        destination_vault,
+    )
+    old_assets = vault.totalAssets()
+    assert old_assets > 0
+    assert strategy.estimatedTotalAssets() > 0
+
+    # simulate profits
+    chain.sleep(sleep_time)
+
+    # set DebtRatio to 0%
+    vault.updateStrategyDebtRatio(strategy, 0, {"from": gov})
+
+    # adjust our maxSingleTrade to 0 to prevent swapping out, but shouldn't see losses
+    strategy.updateMaxSingleTrade(0, {"from": gov})
+    steth = Contract("0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84")
+    before_strategy_assets = strategy.estimatedTotalAssets()
+    before_steth = steth.balanceOf(strategy)
+
+    # harvest to send our funds back to the strategy
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+        destination_vault,
+    )
+
+    # shouldn't have any losses, and shouldn't have moved any stETH out of strategy, and made some in profits
+    # but we will have sent loose WETH to our vault
+    if not no_profit:
+        assert profit > 0
+        assert loss == 0
+        assert vault.totalAssets() > old_assets
+        assert steth.balanceOf(strategy) > before_steth
+        assert strategy.estimatedTotalAssets() < before_strategy_assets
+
+    # simulate profits
+    chain.sleep(sleep_time)
+    next_steth = steth.balanceOf(strategy)
+    next_strategy_assets = strategy.estimatedTotalAssets()
+
+    # harvest to send our funds back to the strategy (but nothing will move since we can't swap stETH)
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+        destination_vault,
+    )
+
+    # we can't take any profit if we can't convert stETH => WETH, but we shouldn't have losses and should have unrealized profits
+    if not no_profit:
+        assert profit == 0
+        assert loss == 0
+        assert steth.balanceOf(strategy) > next_steth
+        assert strategy.estimatedTotalAssets() > next_strategy_assets
+
+    # simulate profits
+    chain.sleep(sleep_time)
+
+    # adjust our maxSingleTrade back up to allow all the funds to exit
+    strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
+
+    # set peg to zero so we properly account for all funds
+    strategy.updatePeg(0, {"from": gov})
+
+    # We are failing in `vault.report()` to actually have all of the WETH that we think we have in profit…some of it is staying trapped as stETH and thus we revert.
+    # our debtOutstanding going into the report below is: 12425736071706193190121
+
+    # one option could be to just set peg to zero before we do a final report that empties everything out, in case we're going from full strategy to nothing
+    # also consider changing the ordering to not prioritize profit and to instead prioritize returning debt...would leave us with profits at the very end and no debt probably?
+
+    # harvest to send our funds back to the strategy
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+        destination_vault,
+    )
+
+    # make sure we made a profit with no losses
+    if not no_profit:
+        assert profit > 0
+        assert loss == 0
+        assert vault.totalAssets() > old_assets
+        assert steth.balanceOf(strategy) <= 1  # sometimes we can't clear all stETH out
+        assert token.balanceOf(strategy) == 0
+
+    # ideally we fully empty the strategy out when setting DR to 0 (or leave 1 wei of stETH)
+    assert strategy.estimatedTotalAssets() <= 1
+
+    print("Profit from our final harvest:", profit / 1e18)
+
+    # withdraw and confirm we made money, or at least that we have about the same (profit whale has to be different from normal whale)
+    vault.withdraw({"from": whale})
+    if no_profit:
+        assert (
+            pytest.approx(token.balanceOf(whale), rel=RELATIVE_APPROX) == starting_whale
+        )
+    else:
+        assert token.balanceOf(whale) > starting_whale
+
+
+# test redeeming all of our steth, then send in WETH for it after gov sweeps out the NFTs
+def test_redeem_all(
+    gov,
+    token,
+    vault,
+    whale,
+    strategy,
+    amount,
+    sleep_time,
+    is_slippery,
+    no_profit,
+    profit_whale,
+    profit_amount,
+    target,
+    use_yswaps,
+    is_gmx,
+    use_v3,
+    destination_vault,
+):
+    ## deposit to the vault after approving
+    starting_whale = token.balanceOf(whale)
+    token.approve(vault, 2**256 - 1, {"from": whale})
+    vault.deposit(amount, {"from": whale})
+    newWhale = token.balanceOf(whale)
+
+    print("Deposited to vault from whale")
+
+    # harvest, store asset amount
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+        destination_vault,
+    )
+    old_assets = vault.totalAssets()
+    assert old_assets > 0
+    assert strategy.estimatedTotalAssets() > 0
+
+    # simulate profits
+    chain.sleep(sleep_time)
+
+    # start a redemption
+    nft_ids = strategy.pendingWithdrawalRequests()
+    assert len(nft_ids) == 0
+    assert strategy.pendingRedemptions() == 0
+    before_assets = strategy.estimatedTotalAssets()
+    print("Assets before initiating withdrawal:", before_assets / 1e18)
+
+    # queue up our withdrawals
+    steth = Contract(strategy.stETH())
+    weth = Contract(strategy.weth())
+    steth_balance = strategy.stethBalance()
+
+    while steth_balance > 1:  # don't get trapped with 1 wei
+        to_withdraw = min(1_000e18, steth_balance)
+        tx = strategy.initiateLSTWithdrawal(to_withdraw, {"from": gov})
+        print("NFT received:", tx.return_value)
+        steth_balance = strategy.stethBalance()
+
+    # have a whale send in their weth
+    weth_whale = accounts.at("0x57757E3D981446D585Af0D9Ae4d7DF6D64647806", force=True)
+    weth.transfer(strategy, strategy.pendingRedemptions(), {"from": weth_whale})
+
+    # have gov sweep out our NFTs
+    for x in strategy.pendingWithdrawalRequests():
+        strategy.rescueNft(x, {"from": gov})
+
+    assert strategy.pendingRedemptions() == 0
+    nft_ids = strategy.pendingWithdrawalRequests()
+    assert len(nft_ids) == 0
+
+    # set DebtRatio to 0% and peg to 0 as well
+    vault.updateStrategyDebtRatio(strategy, 0, {"from": gov})
+    strategy.updatePeg(0, {"from": gov})
+
+    # harvest to send our funds back to the strategy
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+        destination_vault,
+    )
+
+    # make sure we made a profit with no losses
+    if not no_profit:
+        assert profit > 0
+        assert loss == 0
+        assert vault.totalAssets() > old_assets
+        assert steth.balanceOf(strategy) <= 1  # sometimes we can't clear all stETH out
+        assert token.balanceOf(strategy) == 0
+
+    # ideally we fully empty the strategy out when setting DR to 0 (or leave 1 wei of stETH)
+    assert strategy.estimatedTotalAssets() <= 1
+
+    print("Profit from our final harvest:", profit / 1e18)
+
+    # withdraw and confirm we made money, or at least that we have about the same (profit whale has to be different from normal whale)
+    vault.withdraw({"from": whale})
+    if no_profit:
+        assert (
+            pytest.approx(token.balanceOf(whale), rel=RELATIVE_APPROX) == starting_whale
+        )
+    else:
+        assert token.balanceOf(whale) > starting_whale
