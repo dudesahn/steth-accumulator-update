@@ -263,6 +263,9 @@ def test_withdraw_after_donation_2(
     destination_vault,
     is_migration,
     use_old,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
 
     ## deposit to the vault after approving
@@ -379,8 +382,12 @@ def test_withdraw_after_donation_2(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
-    assert strategy_params["totalDebt"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+    # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
+    # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
+    # also, if we're reporting loss, we should be able to get to zero debt as well
+    if not leave_on_invest or not dont_report_loss:
+        assert strategy_params["totalDebt"] == 0
+        assert vault.debtOutstanding(strategy) == 0
 
     # zero since we set our DR to zero
     assert vault.creditAvailable(strategy) == 0
@@ -424,7 +431,11 @@ def test_withdraw_after_donation_2(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+    # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
+    # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
+    # also, if we're reporting loss, we should be able to get to zero debt as well
+    if not leave_on_invest or not dont_report_loss:
+        assert vault.debtOutstanding(strategy) == 0
     assert vault.creditAvailable(strategy) == 0
 
     # specifically check that our profit is greater than our donation or at least close if we get slippage on deposit/withdrawal and have no profit
@@ -476,6 +487,9 @@ def test_withdraw_after_donation_3(
     destination_vault,
     is_migration,
     use_old,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
 
     ## deposit to the vault after approving
@@ -592,8 +606,12 @@ def test_withdraw_after_donation_3(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
-    assert strategy_params["totalDebt"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+    # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
+    # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
+    # also, if we're reporting loss, we should be able to get to zero debt as well
+    if not leave_on_invest or not dont_report_loss:
+        assert strategy_params["totalDebt"] == 0
+        assert vault.debtOutstanding(strategy) == 0
 
     # zero since we set our DR to zero
     assert vault.creditAvailable(strategy) == 0
@@ -637,7 +655,11 @@ def test_withdraw_after_donation_3(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+    # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
+    # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
+    # also, if we're reporting loss, we should be able to get to zero debt as well
+    if not leave_on_invest or not dont_report_loss:
+        assert vault.debtOutstanding(strategy) == 0
     assert vault.creditAvailable(strategy) == 0
 
     # specifically check that our profit is greater than our donation or at least close if we get slippage on deposit/withdrawal and have no profit

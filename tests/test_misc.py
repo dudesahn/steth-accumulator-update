@@ -88,6 +88,7 @@ def test_revoke_strategy_from_vault(
     is_gmx,
     use_v3,
     destination_vault,
+    leave_on_invest,
 ):
 
     ## deposit to the vault after approving
@@ -162,7 +163,10 @@ def test_revoke_strategy_from_vault(
         )
     else:
         assert vault_assets_after_revoke > vault_assets_starting
-        assert token.balanceOf(vault) > vault_holdings_starting + strategy_starting
+        if (
+            not leave_on_invest
+        ):  # in this case we will have losses from slippage, with no peg value left to cover
+            assert token.balanceOf(vault) > vault_holdings_starting + strategy_starting
 
     # should be zero in our strategy
     assert pytest.approx(strategy_assets_after_revoke, rel=RELATIVE_APPROX) == 0
@@ -247,7 +251,7 @@ def test_setters(
         strategy.updatePeg(7, {"from": whale})
 
     with brownie.reverts():
-        strategy.updatePeg(96, {"from": gov})
+        strategy.updatePeg(10_001, {"from": gov})
 
     with brownie.reverts():
         strategy.updateReportLoss(False, {"from": whale})

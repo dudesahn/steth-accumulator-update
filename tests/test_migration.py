@@ -25,6 +25,8 @@ def test_migration(
     use_v3,
     strategy_name,
     destination_vault,
+    leave_on_invest,
+    dont_report_loss,
 ):
 
     ## deposit to the vault after approving
@@ -91,7 +93,17 @@ def test_migration(
 
     # assert that our old strategy is empty
     updated_total_old = strategy.estimatedTotalAssets()
-    assert updated_total_old == 0
+    if leave_on_invest:
+        assert updated_total_old <= 1
+        # make sure our new strategy is setup the same as our old
+        new_strategy.updateDontInvest(False, {"from": gov})
+        # turn off loss reporting if we're investing again too since we automatically lose peg() on each invest
+        if dont_report_loss:
+            new_strategy.updateReportLoss(False, {"from": gov})
+        # also set peg to 0 to minimize losses reported that break a lot of test assumptions
+        new_strategy.updatePeg(0, {"from": gov})
+    else:
+        assert updated_total_old == 0
 
     # harvest to get funds back in new strategy
     (profit, loss, extra) = harvest_strategy(
@@ -184,6 +196,7 @@ def test_empty_migration(
     use_v3,
     destination_vault,
     strategy_name,
+    leave_on_invest,
 ):
 
     ## deposit to the vault after approving
@@ -257,7 +270,10 @@ def test_empty_migration(
         # normally we would send this away, but sMLP doesn't let us transfer zero
         assert strategy.estimatedTotalAssets() == extra
     else:
-        assert strategy.estimatedTotalAssets() == 0
+        if leave_on_invest:
+            assert strategy.estimatedTotalAssets() <= 1
+        else:
+            assert strategy.estimatedTotalAssets() == 0
 
     # make sure we transferred strat params over
     total_debt = vault.strategies(strategy)["totalDebt"]

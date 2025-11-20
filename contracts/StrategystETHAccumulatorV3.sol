@@ -9,6 +9,19 @@ import {ISteth, IQueue, IWETH, ICurveFi} from "./interfaces/StethInterfaces.sol"
 contract StrategystETHAccumulatorV3 is BaseStrategy {
     using SafeERC20 for IERC20;
 
+    event ReportStatus(
+        uint256 profit,
+        uint256 loss,
+        uint256 debtPayment,
+        uint256 wantBalance
+    );
+    event ProfitCheck(uint256 assets, uint256 debt);
+    event CheckBalances(
+        uint256 toWithdraw,
+        uint256 stethBalance,
+        uint256 wethBalance
+    );
+
     /// @notice Maximum size of stETH or WETH we'll swap at once during harvests
     uint256 public maxSingleTrade;
 
@@ -69,7 +82,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     }
 
     function updatePeg(uint256 _peg) external onlyVaultManagers {
-        require(_peg <= 95); // limit peg to max 0.95%, setting from legacy strategy
+        require(_peg <= 1_000); // max 10%
         peg = _peg;
     }
 
@@ -169,12 +182,13 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 wantBal = wantBalance();
                 totalAssets = estimatedTotalAssets();
 
-                // redo our check for profit now that we've swapped stETH for WETH
-                if (totalAssets > debt) {
-                    _profit = totalAssets - debt;
-                } else {
-                    _loss = debt - totalAssets;
-                }
+                emit CheckBalances(toWithdraw, stethBalance(), wantBal);
+
+                // don't re-check for profit because we won't have enough want balance if we do.
+                // this means this any profit from peg/slippage difference will be realized on the following harvest.
+
+                // check for losses now that we've swapped stETH for WETH
+                // don't check for losses here either, because if we're investing we automatically lose 
             }
 
             // profit + _debtOutstanding must be <= wantbalance. Prioritise profit first
@@ -195,6 +209,9 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         if (pendingRedemptions > 0) {
             _loss = 0;
         }
+
+        emit ReportStatus(_profit, _loss, _debtPayment, wantBal);
+        emit ProfitCheck(totalAssets, debt);
     }
 
     function ethToWant(uint256 _amtInWei)
@@ -382,7 +399,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         // Convert received ETH to WETH
         weth.deposit{value: address(this).balance}();
 
-        // send peg portion to WETH-1
         if (peg > 0) {
             uint256 toSend = (_redeemedAmount * peg) / 10_000;
             weth.transfer(WETH_1, toSend);
