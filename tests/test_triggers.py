@@ -25,6 +25,9 @@ def test_triggers(
     is_gmx,
     use_v3,
     destination_vault,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
     # inactive strategy (0 DR and 0 assets) shouldn't be touched by keepers
     currentDebtRatio = vault.strategies(strategy)["debtRatio"]
@@ -39,10 +42,47 @@ def test_triggers(
         target,
         destination_vault,
     )
+
+    # make sure that max delay would trigger it otherwise
+    before = strategy.maxReportDelay()
+    strategy.setMaxReportDelay(0)
     tx = strategy.harvestTrigger(0, {"from": gov})
+    assert tx == True
+
+    # need to harvest again to get all of the funds out w/ stETH accumulator's lagging peg profit
+    # also turn off health check for this since we have no debt but profit
+    strategy.setDoHealthCheck(False, {"from": gov})
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        0,
+        target,
+        destination_vault,
+    )
+    # check this based on what we're doing with our weth
+    if leave_on_invest:
+        assert profit == 0
+        if not dont_report_loss:
+            assert loss > 0
+    else:
+        assert profit > 0
+
+    # strategy should be empty, except when we are reinvesting we seem to leave 1 wei sometimes
+    if leave_on_invest:
+        steth = Contract(strategy.stETH())
+        before_steth = steth.sharesOf(strategy)
+        if before_steth > 0:
+            steth.transferShares(gov, before_steth, {"from": strategy})
+    assert strategy.estimatedTotalAssets() == 0
+    tx = strategy.harvestTrigger(0, {"from": gov})
+    assert strategy.isActive() == False
     print("\nShould we harvest? Should be false.", tx)
     assert tx == False
     vault.updateStrategyDebtRatio(strategy, currentDebtRatio, {"from": gov})
+    strategy.setMaxReportDelay(before)
 
     ## deposit to the vault after approving, no harvest yet
     starting_whale = token.balanceOf(whale)
@@ -65,6 +105,9 @@ def test_triggers(
     assert tx == True
 
     # harvest the credit
+    if leave_on_invest:
+        # we may take a 1 wei loss here from above
+        strategy.setDoHealthCheck(False, {"from": gov})
     (profit, loss, extra) = harvest_strategy(
         use_v3,
         strategy,
@@ -143,11 +186,14 @@ def test_triggers(
     chain.sleep(86400 * 5)
     chain.mine(1)
 
-    # withdraw and confirm we made money, or at least that we have about the same
-    vault.withdraw({"from": whale})
-    if no_profit:
-        assert (
-            pytest.approx(token.balanceOf(whale), rel=RELATIVE_APPROX) == starting_whale
-        )
-    else:
-        assert token.balanceOf(whale) > starting_whale
+    # if we invest all loose WETH, we'll be realizing losses on withdrawal no matter what we do
+    if not invest_all_first:
+        # withdraw and confirm we made money, or at least that we have about the same
+        vault.withdraw({"from": whale})
+        if no_profit:
+            assert (
+                pytest.approx(token.balanceOf(whale), rel=RELATIVE_APPROX)
+                == starting_whale
+            )
+        else:
+            assert token.balanceOf(whale) > starting_whale

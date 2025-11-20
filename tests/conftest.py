@@ -78,7 +78,8 @@ def profit_whale(profit_amount, token, use_v3):
 
 @pytest.fixture(scope="session")
 def profit_amount(token):
-    profit_amount = 5 * 10 ** token.decimals()
+    # make this large enough so it will cover any slippage loss on exiting out with peg set to 0
+    profit_amount = 7.5 * 10 ** token.decimals()
     yield profit_amount
 
 
@@ -237,6 +238,10 @@ def vault(pm, gov, rewards, guardian, management, token, vault_address):
         vault.setManagement(management, {"from": gov})
     else:
         vault = interface.IVaultFactory045(vault_address)
+    if vault.performanceFee() != 0:
+        vault.setPerformanceFee(0, {"from": gov})
+    if vault.managementFee() != 0:
+        vault.setManagementFee(0, {"from": gov})
     yield vault
 
 
@@ -272,22 +277,45 @@ def strategy(
     trade_factory,
     destination_vault,
     token,
+    invest_all_first,
+    leave_on_invest,
+    dont_report_loss,
 ):
     # will need to update this based on the strategy's constructor ******
     strategy = gov.deploy(contract_name, vault)
 
-    strategy.setKeeper(keeper, {"from": gov})
+    # strategy.setKeeper(keeper, {"from": gov})
     # strategy.setHealthCheck(health_check, {"from": gov})
     # strategy.setDoHealthCheck(True, {"from": gov})
-    if vault.performanceFee() != 0:
-        vault.setPerformanceFee(0, {"from": gov})
-    if vault.managementFee() != 0:
-        vault.setManagementFee(0, {"from": gov})
 
     steth = Contract(strategy.stETH())
 
-    # migrate to our new strategy to inherit the broken state
+    # run tests with all funds invested as well as with some loose WETH in the strategy (default)
     old_accumulator = vault.withdrawalQueue(1)
+    old_strategy = Contract(old_accumulator)
+    if invest_all_first:
+        # update to invest
+        old_strategy.updateDontInvest(False, {"from": management})
+        assert old_strategy.wantBalance() > 0
+
+        # invest
+        old_strategy.harvest({"from": management})
+        assert old_strategy.wantBalance() == 0
+        chain.sleep(60)
+        chain.mine()
+
+    #         # account for our "losses"
+    #         old_strategy.setDoHealthCheck(False, {"from": gov})
+    #         tx = old_strategy.harvest({"from": management})
+    #         loss = tx.events["Harvested"]["loss"]
+    #         print("\n😭 Loss from investing:", loss / 1e18, "WETH\n")
+    #         chain.sleep(60)
+    #         chain.mine()
+    #
+    #         # turn it back off once we've finished
+    #         strategy.updateDontInvest(True, {"from": management})
+
+    # migrate to our new strategy to inherit the broken state
     print(
         "Strategy loose want before migration:", token.balanceOf(old_accumulator) / 1e18
     )
@@ -307,6 +335,9 @@ def strategy(
     # for stETH accumulator, turn off our limit on max to swap at once for several of our debt tests
     strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
 
+    # update our slippage higher since we're exiting a large chunk of the pool in some tests (with no arb)
+    strategy.updateSlippageProtectionOut(150, {"from": gov})
+
     # turn on health check for first harvest since we're inheriting profit
     # strategy.setDoHealthCheck(False, {"from": gov})
 
@@ -322,6 +353,7 @@ def strategy(
 
             if vault.strategies(strat_address)["debtRatio"] > 0:
                 vault.updateStrategyDebtRatio(strat_address, 0, {"from": gov})
+                # as of 11/20, this results in ~2200 WETH moving from the router to the vault
                 interface.ICurveStrategy045(strat_address).harvest({"from": gov})
                 vault.removeStrategyFromQueue(strat_address, {"from": gov})
 
@@ -334,12 +366,45 @@ def strategy(
     base_fee_oracle.setManualBaseFeeBool(True, {"from": management})
     assert strategy.isBaseFeeAcceptable() == True
 
+    if invest_all_first:
+        assert strategy.wantBalance() == 0
+        # keep investing
+        if leave_on_invest:
+            strategy.updateDontInvest(False, {"from": management})
+            # turn off loss reporting if we're investing again too since we automatically lose peg() on each invest
+            if dont_report_loss:
+                strategy.updateReportLoss(False, {"from": management})
+            # also set peg to 0 to minimize losses reported that break a lot of test assumptions
+            strategy.updatePeg(0, {"from": gov})
+
     yield strategy
 
 
 #################### FIXTURES ABOVE LIKELY NEED TO BE ADJUSTED FOR THIS REPO ####################
 
 ####################         PUT UNIQUE FIXTURES FOR THIS REPO BELOW         ####################
+
+
+# test out leaving on investing all loose WETH to stETH
+@pytest.fixture(scope="session")
+def leave_on_invest(invest_all_first):
+    if not invest_all_first:
+        leave_on = False
+    else:
+        leave_on = True  # adjust this one as needed
+    yield leave_on
+
+
+# test out depositing all of our loose WETH to stETH first
+@pytest.fixture(scope="session")
+def invest_all_first():
+    yield True
+
+
+# set to true if we should avoid reporting losses on harvests
+@pytest.fixture(scope="session")
+def dont_report_loss():
+    yield False
 
 
 # tried parameterizing these two but brownie did not seem to like it and started locking up

@@ -22,6 +22,7 @@ def test_change_debt(
     is_gmx,
     use_v3,
     destination_vault,
+    leave_on_invest,
 ):
     ## deposit to the vault after approving
     starting_whale = token.balanceOf(whale)
@@ -219,8 +220,30 @@ def test_change_debt(
         assert loss == 0
         assert vault.totalAssets() > old_assets
 
+    print("Profit from our (almost) final harvest:", profit)
+
+    # turn off health check since we have no debt but profits
+    strategy.setDoHealthCheck(False, {"from": gov})
+
+    # we need to do an extra harvest for stETH because we will have "stuck" profits
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        0,
+        target,
+        destination_vault,
+    )
+
     # ideally we fully empty the strategy out when setting DR to 0
-    assert strategy.estimatedTotalAssets() == 0
+    if leave_on_invest:
+        assert strategy.estimatedTotalAssets() <= 1
+        # we should have losses stuck in the strategy as debt
+        assert strategy_params["totalDebt"] > 0
+    else:
+        assert strategy.estimatedTotalAssets() == 0
 
     print("Profit from our final harvest:", profit)
 

@@ -1,4 +1,4 @@
-from brownie import chain, ZERO_ADDRESS
+from brownie import chain, ZERO_ADDRESS, Contract
 import pytest
 from utils import harvest_strategy, check_status
 
@@ -27,6 +27,9 @@ def test_withdraw_after_donation_7(
     use_yswaps,
     RELATIVE_APPROX,
     use_old,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
 
     ## deposit to the vault after approving
@@ -144,8 +147,42 @@ def test_withdraw_after_donation_7(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
-    assert strategy_params["totalDebt"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+
+    # need to do another harvest to realize our losses
+    if invest_all_first and not dont_report_loss:
+        strategy.setDoHealthCheck(False, {"from": gov})
+        (profit, loss, extra) = harvest_strategy(
+            use_v3,
+            strategy,
+            token,
+            gov,
+            profit_whale,
+            profit_amount,
+            target,
+            destination_vault,
+        )
+
+    # check our current status
+    print("\nAfter harvest to take losses")
+    strategy_params = check_status(strategy, vault)
+
+    # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
+    # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
+    # also, if we're reporting loss, we should be able to get to zero debt as well (or 1 if stETH gets stuck)
+    # if we're not investing at all, then we should be able to fully empty our strategy whether we allow losses or not, because we kept the peg aside
+    if not invest_all_first:
+        assert strategy_params["totalDebt"] == 0
+        assert vault.debtOutstanding(strategy) == 0
+    elif leave_on_invest:
+        if not dont_report_loss:
+            assert strategy_params["totalDebt"] <= 1
+            assert vault.debtOutstanding(strategy) <= 1
+        else:
+            assert strategy_params["totalDebt"] > 1
+            assert vault.debtOutstanding(strategy) > 1
+    else:
+        assert strategy_params["totalDebt"] > 1
+        assert vault.debtOutstanding(strategy) > 1
 
     # zero since we set our DR to zero
     assert vault.creditAvailable(strategy) == 0
@@ -171,6 +208,33 @@ def test_withdraw_after_donation_7(
         if not no_profit:
             assert strategy_params["totalGain"] > old_gain
 
+    # turn off health check since we have no debt but profits
+    strategy.setDoHealthCheck(False, {"from": gov})
+
+    # we need to do an extra harvest for stETH because we will have "stuck" profits
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        0,
+        target,
+        destination_vault,
+    )
+
+    # send out a stuck wei if need be
+    if leave_on_invest:
+        steth = Contract(strategy.stETH())
+        before_steth = steth.sharesOf(strategy)
+        if before_steth > 0:
+            steth.transferShares(gov, before_steth, {"from": strategy})
+
+    # ideally we fully empty the strategy out when setting DR to 0
+    assert strategy.estimatedTotalAssets() == 0
+
+    print("Profit from our final harvest:", profit)
+
     # record our new strategy params
     new_params = vault.strategies(strategy)
 
@@ -189,7 +253,11 @@ def test_withdraw_after_donation_7(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+    # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
+    # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
+    # also, if we're reporting loss, we should be able to get to zero debt as well
+    if not leave_on_invest or not dont_report_loss:
+        assert vault.debtOutstanding(strategy) == 0
     assert vault.creditAvailable(strategy) == 0
 
     # specifically check that our profit is greater than our donation or at least close if we get slippage on deposit/withdrawal and have no profit
@@ -235,7 +303,14 @@ def test_withdraw_after_donation_7(
             == current_assets
         )
     else:
-        assert current_assets > donation - to_withdraw + prev_assets
+        # in this case, all peg will be gone
+        if invest_all_first and not dont_report_loss:
+            assert (
+                current_assets + new_params["totalLoss"]
+                > donation - to_withdraw + prev_assets
+            )
+        else:
+            assert current_assets > donation - to_withdraw + prev_assets
 
     new_params = vault.strategies(strategy)
 
@@ -268,6 +343,9 @@ def test_withdraw_after_donation_8(
     use_yswaps,
     RELATIVE_APPROX,
     use_old,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
 
     ## deposit to the vault after approving
@@ -385,8 +463,24 @@ def test_withdraw_after_donation_8(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
-    assert strategy_params["totalDebt"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+
+    # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
+    # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
+    # also, if we're reporting loss, we should be able to get to zero debt as well (or 1 if stETH gets stuck)
+    # if we're not investing at all, then we should be able to fully empty our strategy whether we allow losses or not, because we kept the peg aside
+    if not invest_all_first:
+        assert strategy_params["totalDebt"] == 0
+        assert vault.debtOutstanding(strategy) == 0
+    elif leave_on_invest:
+        if not dont_report_loss:
+            assert strategy_params["totalDebt"] <= 1
+            assert vault.debtOutstanding(strategy) <= 1
+        else:
+            assert strategy_params["totalDebt"] > 1
+            assert vault.debtOutstanding(strategy) > 1
+    else:
+        assert strategy_params["totalDebt"] > 1
+        assert vault.debtOutstanding(strategy) > 1
 
     # zero since we set our DR to zero
     assert vault.creditAvailable(strategy) == 0
@@ -411,6 +505,26 @@ def test_withdraw_after_donation_8(
         # make sure we recorded our gain properly
         if not no_profit:
             assert strategy_params["totalGain"] > old_gain
+
+    # turn off health check since we have no debt but profits
+    strategy.setDoHealthCheck(False, {"from": gov})
+
+    # we need to do an extra harvest for stETH because we will have "stuck" profits
+    (profit, loss, extra) = harvest_strategy(
+        use_v3,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        0,
+        target,
+        destination_vault,
+    )
+
+    # ideally we fully empty the strategy out when setting DR to 0
+    assert strategy.estimatedTotalAssets() == 0
+
+    print("Profit from our final harvest:", profit)
 
     # record our new strategy params
     new_params = vault.strategies(strategy)

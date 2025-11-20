@@ -23,6 +23,9 @@ def test_emergency_exit(
     is_gmx,
     use_v3,
     destination_vault,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
     ## deposit to the vault after approving
     starting_whale = token.balanceOf(whale)
@@ -90,6 +93,10 @@ def test_emergency_exit(
     # again, harvests in emergency exit don't enter prepareReturn, so we need to claim our rewards manually
     # router the target vault still yields as normal without a harvest
 
+    # if we leave on investing, then we won't have any peg to help offset our losses when exiting
+    if leave_on_invest:
+        strategy.setDoHealthCheck(False, {"from": gov})
+
     # harvest to send funds back to vault
     (profit, loss, extra) = harvest_strategy(
         use_v3,
@@ -102,6 +109,12 @@ def test_emergency_exit(
         destination_vault,
     )
     print("Harvest profit:", profit, "\n")
+
+    # whether we set reportLoss to true or not, on emergencyExit we realize losses on any debt we can't get out
+    # we don't enter prepareReturn in emergency exit, we instead liquidateAllPositions()
+    if leave_on_invest:
+        assert profit == 0
+        assert loss > 0
 
     # check our current status
     print("\nAfter third harvest")
@@ -140,8 +153,11 @@ def test_emergency_exit(
         if not no_profit:
             assert strategy_params["totalGain"] > old_gain
 
-    # strategy should be completely empty now, even if no profit or slippery
-    assert strategy.estimatedTotalAssets() == 0
+    # we may get 1 wei left if we've been reinvesting
+    if leave_on_invest:
+        assert strategy.estimatedTotalAssets() <= 1
+    else:
+        assert strategy.estimatedTotalAssets() == 0
 
     # simulate 5 days of waiting for share price to bump back up
     chain.sleep(86400 * 5)
@@ -159,7 +175,10 @@ def test_emergency_exit(
         )
     else:
         assert vault.pricePerShare() > starting_share_price
-        assert strategy_params["totalLoss"] == 0
+        if leave_on_invest:
+            assert strategy_params["totalLoss"] > 0
+        else:
+            assert strategy_params["totalLoss"] == 0
 
     # withdraw and confirm we made money, or at least that we have about the same (profit whale has to be different from normal whale)
     vault.withdraw({"from": whale})
@@ -191,6 +210,9 @@ def test_emergency_exit_with_profit(
     use_v3,
     destination_vault,
     is_migration,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
     ## deposit to the vault after approving
     starting_whale = token.balanceOf(whale)
@@ -217,7 +239,7 @@ def test_emergency_exit_with_profit(
     initial_debt = strategy_params["totalDebt"]
     starting_share_price = vault.pricePerShare()
     loose_want = token.balanceOf(vault)
-    # in the V2 dai vault we have some extra debt not assigned to our main strategy
+    # in the V2 WETH vault we have some extra debt not assigned to our main strategy (or the router). ~2e8 wei of WETH.
     other_debt = vault.totalDebt() - strategy_params["totalDebt"]
 
     # simulate earnings
@@ -334,8 +356,11 @@ def test_emergency_exit_with_profit(
         if not no_profit:
             assert strategy_params["totalGain"] > old_gain
 
-    # confirm that the strategy has no funds
-    assert strategy.estimatedTotalAssets() == 0
+    # we may get 1 wei left if we've been reinvesting
+    if leave_on_invest:
+        assert strategy.estimatedTotalAssets() <= 1
+    else:
+        assert strategy.estimatedTotalAssets() == 0
 
     # simulate 5 days of waiting for share price to bump back up
     chain.sleep(86400 * 5)
@@ -353,7 +378,10 @@ def test_emergency_exit_with_profit(
         )
     else:
         assert vault.pricePerShare() > starting_share_price
-        assert strategy_params["totalLoss"] == 0
+        if leave_on_invest:
+            assert strategy_params["totalLoss"] > 0
+        else:
+            assert strategy_params["totalLoss"] == 0
 
     # withdraw and confirm we made money, or at least that we have about the same (profit whale has to be different from normal whale)
     vault.withdraw({"from": whale})
@@ -386,6 +414,9 @@ def test_emergency_exit_with_loss(
     use_v3,
     destination_vault,
     is_migration,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
     ## deposit to the vault after approving
     starting_whale = token.balanceOf(whale)
@@ -412,7 +443,7 @@ def test_emergency_exit_with_loss(
     starting_share_price = vault.pricePerShare()
     initial_strategy_assets = strategy.estimatedTotalAssets()
     loose_want = token.balanceOf(vault)
-    # in the V2 dai vault we have some extra debt not assigned to our main strategy
+    # in the V2 WETH vault we have some extra debt not assigned to our main strategy (or the router). ~2e8 wei of WETH.
     other_debt = vault.totalDebt() - strategy_params["totalDebt"]
 
     ################# SEND ALL FUNDS AWAY. ADJUST AS NEEDED PER STRATEGY. #################
@@ -422,7 +453,9 @@ def test_emergency_exit_with_loss(
     steth = Contract(strategy.stETH())
     if before_weth > 0:
         token.transfer(gov, before_weth, {"from": strategy})
-    steth.transfer(gov, before_steth, {"from": strategy})
+    before_steth = steth.sharesOf(strategy)
+    if before_steth > 0:
+        steth.transferShares(gov, before_steth, {"from": strategy})
     assert strategy.estimatedTotalAssets() == 0  # we may not get all of the stETH out
 
     ################# SET FALSE IF PROFIT EXPECTED. ADJUST AS NEEDED. #################
@@ -579,8 +612,11 @@ def test_emergency_exit_with_loss(
         if not no_profit:
             assert strategy_params["totalGain"] > old_gain
 
-    # confirm that the strategy has no funds, even for old vaults with the dust donation
-    assert strategy.estimatedTotalAssets() == 0
+    # we may get 1 wei left if we've been reinvesting
+    if leave_on_invest:
+        assert strategy.estimatedTotalAssets() <= 1
+    else:
+        assert strategy.estimatedTotalAssets() == 0
 
     # vault should also have no assets or just profit, except old ones will also have 5 wei
     # gmx will also have taken some profit above, but important to note that only realized profits count toward vault assets

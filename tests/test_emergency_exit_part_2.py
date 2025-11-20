@@ -24,6 +24,9 @@ def test_emergency_exit_with_no_loss(
     use_v3,
     destination_vault,
     is_migration,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
     ## deposit to the vault after approving
     starting_whale = token.balanceOf(whale)
@@ -50,7 +53,7 @@ def test_emergency_exit_with_no_loss(
     starting_share_price = vault.pricePerShare()
     initial_strategy_assets = strategy.estimatedTotalAssets()
     loose_want = token.balanceOf(vault)
-    # in the V2 dai vault we have some extra debt not assigned to our main strategy
+    # in the V2 WETH vault we have some extra debt not assigned to our main strategy (or the router). ~2e8 wei of WETH.
     other_debt = vault.totalDebt() - strategy_params["totalDebt"]
 
     ################# SEND ALL FUNDS AWAY. ADJUST AS NEEDED PER STRATEGY. #################
@@ -59,7 +62,9 @@ def test_emergency_exit_with_no_loss(
     steth = Contract(strategy.stETH())
     if before_weth > 0:
         token.transfer(gov, before_weth, {"from": strategy})
-    steth.transfer(gov, before_steth, {"from": strategy})
+    before_steth = steth.sharesOf(strategy)
+    if before_steth > 0:
+        steth.transferShares(gov, before_steth, {"from": strategy})
     assert strategy.estimatedTotalAssets() == 0  # we may not get all of the stETH out
 
     ################# SET FALSE IF PROFIT EXPECTED. ADJUST AS NEEDED. #################
@@ -94,7 +99,7 @@ def test_emergency_exit_with_no_loss(
     # gov sends it back
     if before_weth > 0:
         token.transfer(strategy, before_weth, {"from": gov})
-    steth.transfer(strategy, before_steth, {"from": gov})
+    steth.transferShares(strategy, before_steth, {"from": gov})
 
     # check our current status
     print("\nAfter getting funds back")
@@ -164,6 +169,10 @@ def test_emergency_exit_with_no_loss(
     # again, harvests in emergency exit don't enter prepareReturn, so we need to claim our rewards manually
     # router the target vault still yields as normal without a harvest
 
+    # if we leave on investing, then we won't have any peg to help offset our losses when exiting
+    if leave_on_invest:
+        strategy.setDoHealthCheck(False, {"from": gov})
+
     # harvest to send all funds back to the vault
     (profit, loss, extra) = harvest_strategy(
         use_v3,
@@ -176,13 +185,23 @@ def test_emergency_exit_with_no_loss(
         destination_vault,
     )
 
+    # whether we set reportLoss to true or not, on emergencyExit we realize losses on any debt we can't get out
+    # we don't enter prepareReturn in emergency exit, we instead liquidateAllPositions()
+    if leave_on_invest:
+        assert profit == 0
+        assert loss > 0
+
     # check our current status
     print("\nAfter second harvest")
     strategy_params = check_status(strategy, vault)
 
     # DR goes to zero, loss, gain, and debt should be zero.
     assert strategy_params["debtRatio"] == 0
-    assert strategy_params["totalDebt"] == strategy_params["totalLoss"] == 0
+    assert strategy_params["totalDebt"] == 0
+    if leave_on_invest:
+        assert strategy_params["totalLoss"] > 0
+    else:
+        assert strategy_params["totalLoss"] == 0
 
     # yswaps needs another harvest to get the final bit of profit to the vault
     if use_yswaps or is_gmx:
@@ -206,8 +225,11 @@ def test_emergency_exit_with_no_loss(
         if not no_profit:
             assert strategy_params["totalGain"] > old_gain
 
-    # confirm that the strategy has no funds
-    assert strategy.estimatedTotalAssets() == 0
+    # we may get 1 wei left if we've been reinvesting
+    if leave_on_invest:
+        assert strategy.estimatedTotalAssets() <= 1
+    else:
+        assert strategy.estimatedTotalAssets() == 0
 
     # debtOutstanding and credit should now be zero, but we will still send any earned profits immediately back to vault
     assert vault.debtOutstanding(strategy) == vault.creditAvailable(strategy) == 0
@@ -220,13 +242,20 @@ def test_emergency_exit_with_no_loss(
     else:
         assert strategy_params["totalGain"] > 0
         assert vault.pricePerShare() > starting_share_price
-        assert vault.totalAssets() > old_assets
+        if leave_on_invest:
+            # we will realize some losses
+            assert vault.totalAssets() < old_assets
+        else:
+            assert vault.totalAssets() > old_assets
 
     # confirm we didn't lose anything, or at worst just dust
     if is_slippery and no_profit:
         assert pytest.approx(loss, rel=RELATIVE_APPROX) == 0
     else:
-        assert loss == 0
+        if leave_on_invest:
+            assert loss > 0
+        else:
+            assert loss == 0
 
     # simulate 5 days of waiting for share price to bump back up
     chain.sleep(86400 * 5)
@@ -244,7 +273,10 @@ def test_emergency_exit_with_no_loss(
         )
     else:
         assert vault.pricePerShare() > starting_share_price
-        assert strategy_params["totalLoss"] == 0
+        if leave_on_invest:
+            assert strategy_params["totalLoss"] > 0
+        else:
+            assert strategy_params["totalLoss"] == 0
 
     # withdraw and confirm we made money, or at least that we have about the same
     vault.withdraw({"from": whale})
