@@ -198,20 +198,6 @@ def test_migrate_harvest_redeem(
     with brownie.reverts():
         strategy.initiateLSTWithdrawal(10e18, {"from": whale})
 
-    print("\nSend 10 stETH to withdraw")
-    tx = strategy.initiateLSTWithdrawal(10e18, {"from": gov})
-    assert strategy.pendingRedemptions() > 0
-    new_redemptions = strategy.pendingRedemptions()
-    print("NFT received:", tx.return_value)
-    after_assets = strategy.estimatedTotalAssets()
-    assert after_assets < before_assets
-    print("Assets after initiating withdrawal:", after_assets / 1e18)
-
-    # check that we have an NFT
-    nft_ids = strategy.pendingWithdrawalRequests()
-    assert len(nft_ids) == 1
-    print("Withdrawal ID:", nft_ids)
-
     # find some sucker with ETH to steal
     withdrawal_queue = Contract("0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1")
     finalized_nft = withdrawal_queue.getLastFinalizedRequestId()
@@ -233,6 +219,21 @@ def test_migrate_harvest_redeem(
                 eth_to_steal / 1e18,
             )
 
+    # withdraw exactly the same amount as what we're going to steal
+    print("\nSend", eth_to_steal / 1e18, "stETH to withdraw")
+    tx = strategy.initiateLSTWithdrawal(eth_to_steal, {"from": gov})
+    assert strategy.pendingRedemptions() > 0
+    new_redemptions = strategy.pendingRedemptions()
+    print("NFT received:", tx.return_value)
+    after_assets = strategy.estimatedTotalAssets()
+    assert after_assets < before_assets
+    print("Assets after initiating withdrawal:", after_assets / 1e18)
+
+    # check that we have an NFT
+    nft_ids = strategy.pendingWithdrawalRequests()
+    assert len(nft_ids) == 1
+    print("Withdrawal ID:", nft_ids)
+
     # steal the NFT
     nft_owner = withdrawal_status["owner"]
     withdrawal_queue.transferFrom(
@@ -243,14 +244,43 @@ def test_migrate_harvest_redeem(
     # transferring in an NFT won't update our pending redemption state var
     assert strategy.pendingRedemptions() == new_redemptions
 
-    # check our assets
-    after_assets = strategy.estimatedTotalAssets()
-    assert after_assets < before_assets
-    print("Assets after transferring in new NFT:", after_assets / 1e18)
+    # check our assets, we don't count assets that are in our NFT
+    new_after_assets = strategy.estimatedTotalAssets()
+    assert new_after_assets < before_assets
+    print("Assets after transferring in new NFT:", new_after_assets / 1e18)
 
     # check that permissions work
     with brownie.reverts():
         strategy.claimLSTWithdrawal(finalized_nft, {"from": whale})
+
+    # store the WETH balance in WETH-1 to make sure it's being sent
+    weth_1 = Contract("0xc56413869c6CDf96496f2b1eF801fEDBdFA7dDB0")
+    loose_weth = token.balanceOf(weth_1)
+
+    # Have our strategy "lose" lots of stETH so the require fails
+    steth = Contract(strategy.stETH())
+    before_steth = steth.sharesOf(strategy)
+    if before_steth > 0:
+        steth.transferShares(gov, before_steth, {"from": strategy})
+
+    # check that our revert hits (will overflow)
+    with brownie.reverts():
+        strategy.claimLSTWithdrawal(finalized_nft, {"from": gov})
+
+    # send back enough so we don't overflow, but don't send back the peg buffer
+    to_send = before_steth - (before_steth * strategy.peg() / 10_000)
+    steth.transferShares(strategy, to_send, {"from": gov})
+
+    # bump up the peg value to a higher level to hit our health check protection
+    peg_before = strategy.peg()
+    strategy.updatePeg(200, {"from": gov})
+    with brownie.reverts("too high"):
+        strategy.claimLSTWithdrawal(finalized_nft, {"from": gov})
+
+    # send it back!
+    remainder = before_steth - to_send
+    steth.transferShares(strategy, remainder, {"from": gov})
+    strategy.updatePeg(peg_before, {"from": gov})
 
     # withdraw from the stolen NFT
     print("\nWithdraw from the stolen NFT")
@@ -258,13 +288,19 @@ def test_migrate_harvest_redeem(
     print("ETH received:", tx.return_value / 1e18)
     assert tx.return_value == eth_to_steal
 
+    # check how much weth was sent
+    sent = token.balanceOf(weth_1) - loose_weth
+    print(
+        "Sent:", sent / 1e18, "Expected:", eth_to_steal * strategy.peg() / 10_000 / 1e18
+    )
+
     # withdrawing from the stolen NFT should zero our pending redemptions
     assert strategy.pendingRedemptions() == 0
 
-    # check our assets
-    after_assets = strategy.estimatedTotalAssets()
-    assert after_assets >= before_assets
-    print("Assets after transferring in new NFT:", after_assets / 1e18)
+    # check our assets, make sure we didn't lose anything to peg on the redemption
+    final_after_assets = strategy.estimatedTotalAssets()
+    assert final_after_assets >= before_assets
+    print("Assets after redeeming from new NFT:", final_after_assets / 1e18)
     assert len(strategy.pendingWithdrawalRequests()) == 1
 
     # have gov pluck out the other NFT
@@ -408,14 +444,14 @@ def test_basic_harvest_empty(
     # adjust our maxSingleTrade back up to allow all the funds to exit
     strategy.updateMaxSingleTrade(1_000_000e18, {"from": gov})
 
-    # set peg to zero so we properly account for all funds
-    strategy.updatePeg(0, {"from": gov})
-
     # We are failing in `vault.report()` to actually have all of the WETH that we think we have in profit…some of it is staying trapped as stETH and thus we revert.
     # our debtOutstanding going into the report below is: 12425736071706193190121
 
     # one option could be to just set peg to zero before we do a final report that empties everything out, in case we're going from full strategy to nothing
     # also consider changing the ordering to not prioritize profit and to instead prioritize returning debt...would leave us with profits at the very end and no debt probably?
+
+    # set peg to zero so we properly account for all funds
+    strategy.updatePeg(0, {"from": gov})
 
     # harvest to send our funds back to the strategy
     (profit, loss, extra) = harvest_strategy(

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.28;
 
-import {BaseStrategy, StrategyParams, SafeERC20, IERC20} from "@yearnvaults/contracts/BaseStrategy.sol";
+import {BaseStrategy, StrategyParams} from "@yearnvaults/contracts/BaseStrategy.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {ISteth, IQueue, IWETH, ICurveFi} from "./interfaces/StethInterfaces.sol";
 
@@ -38,7 +39,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     /// @notice Value to discount our stETH holdings by, in bps.
     uint256 public peg = 95; // 100 = 1%
 
-    // new stuff for redemptions
+    /// @notice Value (in wei) of our pending stETH to ETH redemptions
     uint256 public pendingRedemptions;
     IQueue internal constant WITHDRAWAL_QUEUE =
         IQueue(0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1); // stETH withdrawal queue
@@ -65,7 +66,10 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         maxReportDelay = 1 weeks;
         healthCheck = 0xDDCea799fF1699e98EDF118e0629A974Df7DF012; // hardcode healthcheck
 
-        stETH.approve(address(StableSwapSTETH), type(uint256).max);
+        IERC20(address(stETH)).forceApprove(
+            address(StableSwapSTETH),
+            type(uint256).max
+        );
 
         maxSingleTrade = 500 * 1e18;
         slippageProtectionOut = 50;
@@ -136,7 +140,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         return stETH.balanceOf(address(this));
     }
 
-    /// @notice Check if our strategy as any pending stETH withdrawals via Lido's withdrawal queue.
+    /// @notice Check if our strategy has any pending stETH withdrawals via Lido's withdrawal queue.
     function pendingWithdrawalRequests()
         external
         view
@@ -188,7 +192,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 // this means this any profit from peg/slippage difference will be realized on the following harvest.
 
                 // check for losses now that we've swapped stETH for WETH
-                // don't check for losses here either, because if we're investing we automatically lose 
+                // don't check for losses here either, because if we're investing we automatically lose
             }
 
             // profit + _debtOutstanding must be <= wantbalance. Prioritise profit first
@@ -239,9 +243,9 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         _invest(wantBalance());
     }
 
-    function _invest(uint256 _amount) internal returns (uint256) {
+    function _invest(uint256 _amount) internal {
         if (_amount == 0) {
-            return 0;
+            return;
         }
 
         _amount = Math.min(maxSingleTrade, _amount);
@@ -261,13 +265,12 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 _amount
             );
         }
-
-        return stethBalance() - before;
     }
 
     function _divest(uint256 _amount) internal returns (uint256) {
         uint256 before = wantBalance();
 
+        // limit our swap at the size of our total balance
         _amount = Math.min(_amount, stethBalance());
 
         if (_amount > 0) {
@@ -307,7 +310,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     function prepareMigration(address _newStrategy) internal override {
         uint256 stethBal = stethBalance();
         if (stethBal > 0) {
-            stETH.transfer(_newStrategy, stethBal);
+            IERC20(address(stETH)).safeTransfer(_newStrategy, stethBal);
         }
     }
 
@@ -361,7 +364,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         internal
         returns (uint256[] memory requestIds)
     {
-        IERC20(address(stETH)).safeApprove(address(WITHDRAWAL_QUEUE), _amount);
+        IERC20(address(stETH)).forceApprove(address(WITHDRAWAL_QUEUE), _amount);
 
         uint256[] memory _amounts = new uint256[](1);
         _amounts[0] = _amount;
@@ -381,9 +384,10 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         returns (uint256 _redeemedAmount)
     {
         _redeemedAmount = _claimLSTWithdrawal(_claimId);
-        pendingRedemptions = _redeemedAmount >= pendingRedemptions
+        uint256 _pendingRedemptions = pendingRedemptions;
+        pendingRedemptions = _redeemedAmount >= _pendingRedemptions
             ? 0
-            : pendingRedemptions - _redeemedAmount;
+            : _pendingRedemptions - _redeemedAmount;
     }
 
     /// @notice Claim ETH from completed Lido withdrawal request
@@ -401,7 +405,13 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
         if (peg > 0) {
             uint256 toSend = (_redeemedAmount * peg) / 10_000;
-            weth.transfer(WETH_1, toSend);
+            require(
+                toSend <
+                    estimatedPotentialTotalAssets() -
+                        vault.strategies(address(this)).totalDebt,
+                "too high"
+            );
+            IERC20(address(weth)).safeTransfer(WETH_1, toSend);
         }
     }
 

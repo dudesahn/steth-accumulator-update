@@ -314,9 +314,13 @@ def test_withdraw_after_donation_7(
 
     new_params = vault.strategies(strategy)
 
-    # assert that our strategy has no debt
-    assert new_params["totalDebt"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+    # if we're investing, we may still have 1 wei left
+    if leave_on_invest:
+        assert vault.debtOutstanding(strategy) <= 1
+        assert strategy_params["totalDebt"] <= 1
+    else:
+        assert new_params["totalDebt"] == 0
+        assert vault.debtOutstanding(strategy) == 0
 
 
 # lower debtRatio to 0, donate, withdraw less than the donation, then harvest
