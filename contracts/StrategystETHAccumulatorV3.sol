@@ -10,19 +10,6 @@ import {ISteth, IQueue, IWETH, ICurveFi} from "./interfaces/StethInterfaces.sol"
 contract StrategystETHAccumulatorV3 is BaseStrategy {
     using SafeERC20 for IERC20;
 
-    event ReportStatus(
-        uint256 profit,
-        uint256 loss,
-        uint256 debtPayment,
-        uint256 wantBalance
-    );
-    event ProfitCheck(uint256 assets, uint256 debt);
-    event CheckBalances(
-        uint256 toWithdraw,
-        uint256 stethBalance,
-        uint256 wethBalance
-    );
-
     /// @notice Maximum size of stETH or WETH we'll swap at once during harvests
     uint256 public maxSingleTrade;
 
@@ -186,8 +173,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 wantBal = wantBalance();
                 totalAssets = estimatedTotalAssets();
 
-                emit CheckBalances(toWithdraw, stethBalance(), wantBal);
-
                 // don't re-check for profit because we won't have enough want balance if we do.
                 // this means this any profit from peg/slippage difference will be realized on the following harvest.
 
@@ -213,9 +198,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         if (pendingRedemptions > 0) {
             _loss = 0;
         }
-
-        emit ReportStatus(_profit, _loss, _debtPayment, wantBal);
-        emit ProfitCheck(totalAssets, debt);
     }
 
     function ethToWant(uint256 _amtInWei)
@@ -253,7 +235,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
         weth.withdraw(_amount);
 
-        //test if we should buy instead of mint
+        // test if we should buy instead of mint
         uint256 out = StableSwapSTETH.get_dy(WETHID, STETHID, _amount);
         if (out < _amount) {
             stETH.submit{value: _amount}(REFERRAL);
@@ -265,6 +247,18 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 _amount
             );
         }
+    }
+
+    /// @notice Use to manually unwind stETH to WETH via Curve outside of a harvest.
+    function manualDivest(uint256 _amount)
+        external
+        onlyEmergencyAuthorized
+        returns (uint256)
+    {
+        // we step our withdrawals. adjust max single trade to withdraw more
+        _amount = Math.min(maxSingleTrade, _amount);
+
+        return _divest(_amount);
     }
 
     function _divest(uint256 _amount) internal returns (uint256) {
@@ -384,10 +378,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         returns (uint256 _redeemedAmount)
     {
         _redeemedAmount = _claimLSTWithdrawal(_claimId);
-        uint256 _pendingRedemptions = pendingRedemptions;
-        pendingRedemptions = _redeemedAmount >= _pendingRedemptions
-            ? 0
-            : _pendingRedemptions - _redeemedAmount;
     }
 
     /// @notice Claim ETH from completed Lido withdrawal request
@@ -403,11 +393,17 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         // Convert received ETH to WETH
         weth.deposit{value: address(this).balance}();
 
+        uint256 _pendingRedemptions = pendingRedemptions;
+        pendingRedemptions = _redeemedAmount >= _pendingRedemptions
+            ? 0
+            : _pendingRedemptions - _redeemedAmount;
+
         if (peg > 0) {
             uint256 toSend = (_redeemedAmount * peg) / 10_000;
             require(
                 toSend <
-                    estimatedPotentialTotalAssets() -
+                    estimatedPotentialTotalAssets() +
+                        pendingRedemptions -
                         vault.strategies(address(this)).totalDebt,
                 "too high"
             );
@@ -415,7 +411,21 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         }
     }
 
-    /// @notice Rescue a stuck withdrawal NFT. Only may be called by governance.
+    /// @notice Manually claim our Lido withdrawals
+    /// @dev Only needed if the hint and batch ID are too far from each other.
+    function manualClaimWithdrawals(
+        uint256[] calldata _requestIds,
+        uint256[] calldata _hints,
+        bool _zeroRedemptions
+    ) external onlyEmergencyAuthorized {
+        WITHDRAWAL_QUEUE.claimWithdrawals(_requestIds, _hints);
+        if (_zeroRedemptions) {
+            pendingRedemptions = 0;
+        }
+    }
+
+    /// @notice Rescue a stuck withdrawal NFT.
+    /// @dev Only may be called by governance.
     function rescueNft(uint256 _requestId) external onlyGovernance {
         WITHDRAWAL_QUEUE.safeTransferFrom(
             address(this),
@@ -423,6 +433,12 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
             _requestId
         );
         // even if this isn't our only NFT, zero redemptions assuming that we will sweep them all
+        pendingRedemptions = 0;
+    }
+
+    /// @notice Manually zero the pending redemptions in case of significant dust or a Lido slashing event.
+    /// @dev Only may be called by governance.
+    function zeroPendingRedemptions() external onlyGovernance {
         pendingRedemptions = 0;
     }
 }

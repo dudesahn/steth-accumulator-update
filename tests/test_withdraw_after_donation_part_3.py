@@ -253,6 +253,7 @@ def test_withdraw_after_donation_7(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
+
     # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
     # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
     # also, if we're reporting loss, we should be able to get to zero debt as well

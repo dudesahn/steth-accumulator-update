@@ -396,11 +396,11 @@ def leave_on_invest(invest_all_first):
     if not invest_all_first:
         leave_on = False
     else:
-        leave_on = True  # adjust this one as needed
+        leave_on = False  # adjust this one as needed, default False
     yield leave_on
 
 
-# test out depositing all of our loose WETH to stETH first
+# test out depositing all of our loose WETH to stETH first (default, and real-world, False)
 @pytest.fixture(scope="session")
 def invest_all_first():
     yield False
@@ -410,7 +410,7 @@ def invest_all_first():
 # the strategy—by default we should leave this as False (aka DO report losses)
 @pytest.fixture(scope="session")
 def dont_report_loss():
-    yield True
+    yield False
 
 
 # tried parameterizing these two but brownie did not seem to like it and started locking up

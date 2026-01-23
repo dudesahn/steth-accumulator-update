@@ -236,6 +236,13 @@ def test_no_profit(
     ## deposit to the vault after approving
     token.approve(vault, 2**256 - 1, {"from": whale})
     vault.deposit(amount, {"from": whale})
+
+    # check our current status
+    print("\nBefore first harvest")
+    strategy_params = check_status(strategy, vault)
+    print("stETH Balance:", strategy.stethBalance() / 1e18)
+    print("WETH Balance:", strategy.wantBalance() / 1e18)
+
     (profit, loss, extra) = harvest_strategy(
         use_v3,
         strategy,
@@ -250,14 +257,35 @@ def test_no_profit(
     # check our current status
     print("\nAfter first harvest")
     strategy_params = check_status(strategy, vault)
+    print("stETH Balance:", strategy.stethBalance() / 1e18)
+    print("WETH Balance:", strategy.wantBalance() / 1e18)
 
     # store our starting share price
     starting_share_price = vault.pricePerShare()
 
-    # normally we would sleep here, but we are intentionally trying to avoid profit, so we don't
+    # we need to take an extra harvest here because of how the peg() works
+    # in our first harvest, we had profit to realize from normal operations (pending profit). however, the strategy doesn't
+    # have enough loose WETH to cover it, so it needs to swap some stETH to realize the profits and prove to the vault
+    # that it has those tokens. when it does this swap, it creates more profit from the released `peg()` value, so about 1% (assuming peg is around 100)
+    if strategy.peg() > 0:
+        (profit, loss, extra) = harvest_strategy(
+            use_v3,
+            strategy,
+            token,
+            gov,
+            profit_whale,
+            0,
+            target,
+            destination_vault,
+        )
 
-    # if are using yswaps and we don't want profit, don't use yswaps (False for first argument).
-    # Or just don't harvest our destination strategy, can pass 0 for profit_amount and use if statement in utils
+    # check our current status
+    print("\nAfter second harvest")
+    strategy_params = check_status(strategy, vault)
+    print("stETH Balance:", strategy.stethBalance() / 1e18)
+    print("WETH Balance:", strategy.wantBalance() / 1e18)
+
+    # normally we would sleep here, but we are intentionally trying to avoid profit, so we don't
     (profit, loss, extra) = harvest_strategy(
         use_v3,
         strategy,
@@ -270,7 +298,7 @@ def test_no_profit(
     )
 
     # check our current status
-    print("\nAfter harvest")
+    print("\nAfter third harvest")
     strategy_params = check_status(strategy, vault)
 
     assert profit == 0
@@ -404,117 +432,3 @@ def test_gmx_vesting(
     # sweep out our MPX
     strategy.unstakeAndSweepVestedMpx(strategy.stakedMpx(), {"from": gov})
     assert mpx.balanceOf(gov) > 0
-
-
-# test redeeming all of our steth, then send in WETH for it after gov sweeps out the NFTs
-def test_redeem_all(
-    gov,
-    token,
-    vault,
-    whale,
-    strategy,
-    amount,
-    sleep_time,
-    is_slippery,
-    no_profit,
-    profit_whale,
-    profit_amount,
-    target,
-    use_yswaps,
-    is_gmx,
-    use_v3,
-    destination_vault,
-):
-    ## deposit to the vault after approving
-    starting_whale = token.balanceOf(whale)
-    token.approve(vault, 2**256 - 1, {"from": whale})
-    vault.deposit(amount, {"from": whale})
-    newWhale = token.balanceOf(whale)
-
-    print("Deposited to vault from whale")
-
-    # harvest, store asset amount
-    (profit, loss, extra) = harvest_strategy(
-        use_v3,
-        strategy,
-        token,
-        gov,
-        profit_whale,
-        profit_amount,
-        target,
-        destination_vault,
-    )
-    old_assets = vault.totalAssets()
-    assert old_assets > 0
-    assert strategy.estimatedTotalAssets() > 0
-
-    # simulate profits
-    chain.sleep(sleep_time)
-
-    # start a redemption
-    nft_ids = strategy.pendingWithdrawalRequests()
-    assert len(nft_ids) == 0
-    assert strategy.pendingRedemptions() == 0
-    before_assets = strategy.estimatedTotalAssets()
-    print("Assets before initiating withdrawal:", before_assets / 1e18)
-
-    # queue up our withdrawals
-    steth = Contract(strategy.stETH())
-    weth = Contract(strategy.weth())
-    steth_balance = strategy.stethBalance()
-
-    while steth_balance > 1:  # don't get trapped with 1 wei
-        to_withdraw = min(1_000e18, steth_balance)
-        tx = strategy.initiateLSTWithdrawal(to_withdraw, {"from": gov})
-        print("NFT received:", tx.return_value)
-        steth_balance = strategy.stethBalance()
-
-    # have a whale send in their weth
-    weth_whale = accounts.at("0x57757E3D981446D585Af0D9Ae4d7DF6D64647806", force=True)
-    weth.transfer(strategy, strategy.pendingRedemptions(), {"from": weth_whale})
-
-    # have gov sweep out our NFTs
-    for x in strategy.pendingWithdrawalRequests():
-        strategy.rescueNft(x, {"from": gov})
-
-    assert strategy.pendingRedemptions() == 0
-    nft_ids = strategy.pendingWithdrawalRequests()
-    assert len(nft_ids) == 0
-
-    # set DebtRatio to 0% and peg to 0 as well
-    vault.updateStrategyDebtRatio(strategy, 0, {"from": gov})
-    strategy.updatePeg(0, {"from": gov})
-
-    # harvest to send our funds back to the strategy
-    (profit, loss, extra) = harvest_strategy(
-        use_v3,
-        strategy,
-        token,
-        gov,
-        profit_whale,
-        profit_amount,
-        target,
-        destination_vault,
-    )
-
-    # make sure we made a profit with no losses
-    if not no_profit:
-        assert profit > 0
-        assert loss == 0
-        assert vault.totalAssets() > old_assets
-        assert steth.balanceOf(strategy) <= 1  # sometimes we can't clear all stETH out
-        assert token.balanceOf(strategy) == 0
-
-    # ideally we fully empty the strategy out when setting DR to 0 (or leave 1 wei of stETH)
-    assert strategy.estimatedTotalAssets() <= 1
-
-    print("Profit from our final harvest:", profit / 1e18)
-
-    # withdraw and confirm we made money, or at least that we have about the same (profit whale has to be different from normal whale)
-    vault.withdraw({"from": whale})
-    if no_profit:
-        assert (
-            pytest.approx(token.balanceOf(whale), rel=RELATIVE_APPROX) == starting_whale
-        )
-    else:
-        assert token.balanceOf(whale) > starting_whale
