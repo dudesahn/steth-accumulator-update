@@ -309,6 +309,9 @@ def test_emergency_shutdown_from_vault(
     use_v3,
     destination_vault,
     is_migration,
+    leave_on_invest,
+    dont_report_loss,
+    invest_all_first,
 ):
     ## deposit to the vault after approving
     starting_whale = token.balanceOf(whale)
@@ -405,12 +408,18 @@ def test_emergency_shutdown_from_vault(
     assert strategy_params["totalGain"] > 0
 
     # debtOutstanding, debt, credit should now be zero, but we will still send any earned profits immediately back to vault
-    assert (
-        vault.debtOutstanding(strategy)
-        == strategy_params["totalDebt"]
-        == vault.creditAvailable(strategy)
-        == 0
-    )
+    if leave_on_invest:
+        # if we're investing, we will have unrealized losses still
+        assert vault.creditAvailable(strategy) == 0
+        assert vault.debtOutstanding(strategy) > 0
+        assert strategy_params["totalDebt"] > 0
+    else:
+        assert (
+            vault.debtOutstanding(strategy)
+            == strategy_params["totalDebt"]
+            == vault.creditAvailable(strategy)
+            == 0
+        )
 
     # harvest again to get the last of our profit with ySwaps
     if use_yswaps or is_gmx:

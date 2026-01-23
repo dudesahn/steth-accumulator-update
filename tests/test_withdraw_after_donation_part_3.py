@@ -253,6 +253,7 @@ def test_withdraw_after_donation_7(
         assert pytest.approx(strategy_params["totalLoss"], rel=RELATIVE_APPROX) == 0
     else:
         assert strategy_params["totalLoss"] == 0
+
     # if we're investing with 0 peg, we will have unrealized losses stuck in the strategy as debt with no assets
     # in theory we would've have offsetting profits, but since we set peg to zero earlier, they've already been realized
     # also, if we're reporting loss, we should be able to get to zero debt as well
@@ -314,9 +315,13 @@ def test_withdraw_after_donation_7(
 
     new_params = vault.strategies(strategy)
 
-    # assert that our strategy has no debt
-    assert new_params["totalDebt"] == 0
-    assert vault.debtOutstanding(strategy) == 0
+    # if we're investing, we may still have 1 wei left
+    if leave_on_invest:
+        assert vault.debtOutstanding(strategy) <= 1
+        assert strategy_params["totalDebt"] <= 1
+    else:
+        assert new_params["totalDebt"] == 0
+        assert vault.debtOutstanding(strategy) == 0
 
 
 # lower debtRatio to 0, donate, withdraw less than the donation, then harvest

@@ -338,6 +338,10 @@ def strategy(
     # update our slippage higher since we're exiting a large chunk of the pool in some tests (with no arb)
     strategy.updateSlippageProtectionOut(150, {"from": gov})
 
+    # update our new strategy peg to match the current one in our old strategy to make testing more predictable
+    if old_strategy.peg() != strategy.peg():
+        strategy.updatePeg(old_strategy.peg(), {"from": gov})
+
     # turn on health check for first harvest since we're inheriting profit
     # strategy.setDoHealthCheck(False, {"from": gov})
 
@@ -352,6 +356,7 @@ def strategy(
                 continue
 
             if vault.strategies(strat_address)["debtRatio"] > 0:
+                print("Pull funds from router, send them to vault")
                 vault.updateStrategyDebtRatio(strat_address, 0, {"from": gov})
                 # as of 11/20, this results in ~2200 WETH moving from the router to the vault
                 interface.ICurveStrategy045(strat_address).harvest({"from": gov})
@@ -391,17 +396,18 @@ def leave_on_invest(invest_all_first):
     if not invest_all_first:
         leave_on = False
     else:
-        leave_on = True  # adjust this one as needed
+        leave_on = False  # adjust this one as needed, default False
     yield leave_on
 
 
-# test out depositing all of our loose WETH to stETH first
+# test out depositing all of our loose WETH to stETH first (default, and real-world, False)
 @pytest.fixture(scope="session")
 def invest_all_first():
-    yield True
+    yield False
 
 
-# set to true if we should avoid reporting losses on harvests
+# set to true if we should avoid reporting losses on harvests. realistically this only matters if we plan to scale up
+# the strategy—by default we should leave this as False (aka DO report losses)
 @pytest.fixture(scope="session")
 def dont_report_loss():
     yield False

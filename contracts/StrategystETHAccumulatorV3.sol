@@ -1,26 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0
 pragma solidity 0.8.28;
 
-import {BaseStrategy, StrategyParams, SafeERC20, IERC20} from "@yearnvaults/contracts/BaseStrategy.sol";
+import {BaseStrategy, StrategyParams} from "@yearnvaults/contracts/BaseStrategy.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {ISteth, IQueue, IWETH, ICurveFi} from "./interfaces/StethInterfaces.sol";
 
 contract StrategystETHAccumulatorV3 is BaseStrategy {
     using SafeERC20 for IERC20;
-
-    event ReportStatus(
-        uint256 profit,
-        uint256 loss,
-        uint256 debtPayment,
-        uint256 wantBalance
-    );
-    event ProfitCheck(uint256 assets, uint256 debt);
-    event CheckBalances(
-        uint256 toWithdraw,
-        uint256 stethBalance,
-        uint256 wethBalance
-    );
 
     /// @notice Maximum size of stETH or WETH we'll swap at once during harvests
     uint256 public maxSingleTrade;
@@ -38,7 +26,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     /// @notice Value to discount our stETH holdings by, in bps.
     uint256 public peg = 95; // 100 = 1%
 
-    // new stuff for redemptions
+    /// @notice Value (in wei) of our pending stETH to ETH redemptions
     uint256 public pendingRedemptions;
     IQueue internal constant WITHDRAWAL_QUEUE =
         IQueue(0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1); // stETH withdrawal queue
@@ -65,7 +53,10 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         maxReportDelay = 1 weeks;
         healthCheck = 0xDDCea799fF1699e98EDF118e0629A974Df7DF012; // hardcode healthcheck
 
-        stETH.approve(address(StableSwapSTETH), type(uint256).max);
+        IERC20(address(stETH)).forceApprove(
+            address(StableSwapSTETH),
+            type(uint256).max
+        );
 
         maxSingleTrade = 500 * 1e18;
         slippageProtectionOut = 50;
@@ -136,7 +127,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         return stETH.balanceOf(address(this));
     }
 
-    /// @notice Check if our strategy as any pending stETH withdrawals via Lido's withdrawal queue.
+    /// @notice Check if our strategy has any pending stETH withdrawals via Lido's withdrawal queue.
     function pendingWithdrawalRequests()
         external
         view
@@ -182,13 +173,11 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 wantBal = wantBalance();
                 totalAssets = estimatedTotalAssets();
 
-                emit CheckBalances(toWithdraw, stethBalance(), wantBal);
-
                 // don't re-check for profit because we won't have enough want balance if we do.
                 // this means this any profit from peg/slippage difference will be realized on the following harvest.
 
                 // check for losses now that we've swapped stETH for WETH
-                // don't check for losses here either, because if we're investing we automatically lose 
+                // don't check for losses here either, because if we're investing we automatically lose
             }
 
             // profit + _debtOutstanding must be <= wantbalance. Prioritise profit first
@@ -209,9 +198,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         if (pendingRedemptions > 0) {
             _loss = 0;
         }
-
-        emit ReportStatus(_profit, _loss, _debtPayment, wantBal);
-        emit ProfitCheck(totalAssets, debt);
     }
 
     function ethToWant(uint256 _amtInWei)
@@ -239,9 +225,9 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         _invest(wantBalance());
     }
 
-    function _invest(uint256 _amount) internal returns (uint256) {
+    function _invest(uint256 _amount) internal {
         if (_amount == 0) {
-            return 0;
+            return;
         }
 
         _amount = Math.min(maxSingleTrade, _amount);
@@ -249,7 +235,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
 
         weth.withdraw(_amount);
 
-        //test if we should buy instead of mint
+        // test if we should buy instead of mint
         uint256 out = StableSwapSTETH.get_dy(WETHID, STETHID, _amount);
         if (out < _amount) {
             stETH.submit{value: _amount}(REFERRAL);
@@ -261,13 +247,24 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
                 _amount
             );
         }
+    }
 
-        return stethBalance() - before;
+    /// @notice Use to manually unwind stETH to WETH via Curve outside of a harvest.
+    function manualDivest(uint256 _amount)
+        external
+        onlyEmergencyAuthorized
+        returns (uint256)
+    {
+        // we step our withdrawals. adjust max single trade to withdraw more
+        _amount = Math.min(maxSingleTrade, _amount);
+
+        return _divest(_amount);
     }
 
     function _divest(uint256 _amount) internal returns (uint256) {
         uint256 before = wantBalance();
 
+        // limit our swap at the size of our total balance
         _amount = Math.min(_amount, stethBalance());
 
         if (_amount > 0) {
@@ -307,7 +304,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
     function prepareMigration(address _newStrategy) internal override {
         uint256 stethBal = stethBalance();
         if (stethBal > 0) {
-            stETH.transfer(_newStrategy, stethBal);
+            IERC20(address(stETH)).safeTransfer(_newStrategy, stethBal);
         }
     }
 
@@ -361,7 +358,7 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         internal
         returns (uint256[] memory requestIds)
     {
-        IERC20(address(stETH)).safeApprove(address(WITHDRAWAL_QUEUE), _amount);
+        IERC20(address(stETH)).forceApprove(address(WITHDRAWAL_QUEUE), _amount);
 
         uint256[] memory _amounts = new uint256[](1);
         _amounts[0] = _amount;
@@ -381,9 +378,6 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         returns (uint256 _redeemedAmount)
     {
         _redeemedAmount = _claimLSTWithdrawal(_claimId);
-        pendingRedemptions = _redeemedAmount >= pendingRedemptions
-            ? 0
-            : pendingRedemptions - _redeemedAmount;
     }
 
     /// @notice Claim ETH from completed Lido withdrawal request
@@ -399,13 +393,39 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
         // Convert received ETH to WETH
         weth.deposit{value: address(this).balance}();
 
+        uint256 _pendingRedemptions = pendingRedemptions;
+        pendingRedemptions = _redeemedAmount >= _pendingRedemptions
+            ? 0
+            : _pendingRedemptions - _redeemedAmount;
+
         if (peg > 0) {
             uint256 toSend = (_redeemedAmount * peg) / 10_000;
-            weth.transfer(WETH_1, toSend);
+            require(
+                toSend <
+                    estimatedPotentialTotalAssets() +
+                        pendingRedemptions -
+                        vault.strategies(address(this)).totalDebt,
+                "too high"
+            );
+            IERC20(address(weth)).safeTransfer(WETH_1, toSend);
         }
     }
 
-    /// @notice Rescue a stuck withdrawal NFT. Only may be called by governance.
+    /// @notice Manually claim our Lido withdrawals
+    /// @dev Only needed if the hint and batch ID are too far from each other.
+    function manualClaimWithdrawals(
+        uint256[] calldata _requestIds,
+        uint256[] calldata _hints,
+        bool _zeroRedemptions
+    ) external onlyEmergencyAuthorized {
+        WITHDRAWAL_QUEUE.claimWithdrawals(_requestIds, _hints);
+        if (_zeroRedemptions) {
+            pendingRedemptions = 0;
+        }
+    }
+
+    /// @notice Rescue a stuck withdrawal NFT.
+    /// @dev Only may be called by governance.
     function rescueNft(uint256 _requestId) external onlyGovernance {
         WITHDRAWAL_QUEUE.safeTransferFrom(
             address(this),
@@ -413,6 +433,12 @@ contract StrategystETHAccumulatorV3 is BaseStrategy {
             _requestId
         );
         // even if this isn't our only NFT, zero redemptions assuming that we will sweep them all
+        pendingRedemptions = 0;
+    }
+
+    /// @notice Manually zero the pending redemptions in case of significant dust or a Lido slashing event.
+    /// @dev Only may be called by governance.
+    function zeroPendingRedemptions() external onlyGovernance {
         pendingRedemptions = 0;
     }
 }
